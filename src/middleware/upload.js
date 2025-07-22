@@ -4,17 +4,17 @@ const fs = require('fs');
 
 // Ensure upload directory exists
 const uploadDir = process.env.UPLOAD_DIR || 'uploads';
-// if (!fs.existsSync(uploadDir)) {
-//   fs.mkdirSync(uploadDir, { recursive: true });
-// }
+if (!fs.existsSync(uploadDir)) {
+  fs.mkdirSync(uploadDir, { recursive: true });
+}
 
 // Configure storage
 const storage = multer.diskStorage({
   destination: (req, file, cb) => {
     const userDir = path.join(uploadDir, req.user.id);
-    // if (!fs.existsSync(userDir)) {
-    //   fs.mkdirSync(userDir, { recursive: true });
-    // }
+    if (!fs.existsSync(userDir)) {
+      fs.mkdirSync(userDir, { recursive: true });
+    }
     cb(null, userDir);
   },
   filename: (req, file, cb) => {
