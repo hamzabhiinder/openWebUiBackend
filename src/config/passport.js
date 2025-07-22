@@ -7,8 +7,8 @@ const bcrypt = require('bcryptjs');
 
 // Google OAuth Strategy
 passport.use(new GoogleStrategy({
-  clientID: process.env.GOOGLE_CLIENT_ID,
-  clientSecret: process.env.GOOGLE_CLIENT_SECRET,
+  clientID: "process.env.GOOGLE_CLIENT_ID",
+  clientSecret: "process.env.GOOGLE_CLIENT_SECRET",
   callbackURL: "/api/auth/google/callback"
 }, async (accessToken, refreshToken, profile, done) => {
   try {
@@ -58,7 +58,7 @@ passport.use(new JwtStrategy({
     const user = await prisma.user.findUnique({
       where: { id: payload.userId }
     });
-    
+
     if (user) {
       return done(null, user);
     }
