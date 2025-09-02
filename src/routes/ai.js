@@ -8,10 +8,14 @@ const OpenAI = require('openai');
 const router = express.Router();
 
 // Initialize OpenAI client
-const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY
-});
+// const openai = new OpenAI({
+//   apiKey: process.env.GEMINI_API_KEY,
+//   baseURL: "https://generativelanguage.googleapis.com/v1beta/openai/",
 
+// });
+// // const openai = new OpenAI({
+// //   apiKey: process.env.OPENAI_API_KEY
+// // });
 // ✅ Get available AI models
 router.get('/models', async (req, res) => {
   try {
@@ -227,13 +231,13 @@ async function saveChatAndTrackUsage(userId, chatId, prompt, fullResponseContent
   }
 }
 
-
-// ✅ Generate AI text response with file support
 router.post(
   '/generate',
   [
     body('model').trim().notEmpty().withMessage('Model is required'),
     body('prompt').trim().notEmpty().withMessage('Prompt is required'),
+    body('provider').trim().notEmpty().withMessage('Provider is required'),
+
     body('chatId').optional().isString(),
     body('files').optional().isArray(),
   ],
@@ -245,8 +249,24 @@ router.post(
         return res.status(400).json({ errors: errors.array() });
       }
 
-      const { model, prompt, chatId, files } = req.body;
+      const { model, prompt, chatId, files, provider } = req.body;
       const userId = req.user.id;
+
+      let openai;
+      if (provider === "Gemini") {
+        openai = new OpenAI({
+          apiKey: process.env.GEMINI_API_KEY,
+          baseURL: "https://generativelanguage.googleapis.com/v1beta/openai/",
+
+        });
+
+      }
+      else {
+        openai = new OpenAI({
+          apiKey: process.env.OPENAI_API_KEY
+        });
+      }
+
 
       // ✅ Check monthly limit
       if (req.user.apiUsage >= req.user.monthlyLimit) {
@@ -337,7 +357,7 @@ Example: $x^2 + 3x$ is output for "x² + 3x" to appear as TeX.`
         role: 'user',
         content: finalPrompt
       });
-      console.log("working generates", model, " ", messages);
+      // console.log("working generates", model, " ", messages);
 
       res.setHeader('Content-Type', 'text/event-stream');
       res.setHeader('Cache-Control', 'no-cache');
@@ -352,13 +372,13 @@ Example: $x^2 + 3x$ is output for "x² + 3x" to appear as TeX.`
 
 
       try {
-        console.log('Calling OpenAI with messages:', messages.length, 'messages');
-        
+
+
         const stream = await openai.chat.completions.create({
           model: model,
           messages: messages,
           stream: true,
-          max_tokens: 2000
+          max_tokens: 3000
         });
 
         content = '';
@@ -370,19 +390,23 @@ Example: $x^2 + 3x$ is output for "x² + 3x" to appear as TeX.`
             res.write(`data: ${JSON.stringify({ content: contentChunk })}\n\n`);
           }
         }
+        console.log('OpenAI :', await stream,);
 
-        const finalCompletion = await stream.finalChatCompletion();
-        console.log('OpenAI response completed, tokens:', finalCompletion.usage?.total_tokens);
 
-        tokens = finalCompletion.usage?.total_tokens || 0;
+        // const finalCompletion = await stream.finalChatCompletion();
+
+        // console.log('OpenAI response completed, tokens:', finalCompletion.usage?.total_tokens);
+
+        tokens = fullResponseContent.length + prompt.length;
+        console.log("tokens", tokens);
 
       } catch (openaiError) {
         console.error('OpenAI API error:', openaiError);
         console.error('Error details:', openaiError.response?.data || openaiError.message);
-        
+
         // Send error to client
         res.write(`data: ${JSON.stringify({ error: 'AI service temporarily unavailable' })}\n\n`);
-        
+
         // Fallback to AI service
         const fileContext = processedFiles.length > 0
           ? '\n\nAttached files:\n' + processedFiles.map(f => `- ${f.name}: ${f.extractedText || '...'}`).join('\n')
@@ -404,12 +428,14 @@ Example: $x^2 + 3x$ is output for "x² + 3x" to appear as TeX.`
   }
 );
 
-// ✅ Generate AI image response
+// // ✅ Generate AI image response
 router.post(
   '/generate-image',
   [
     body('prompt').trim().notEmpty().withMessage('Prompt is required'),
     body('chatId').optional().isString(),
+    body('provider').trim().notEmpty().withMessage('Provider is required'),
+    body('model').trim().notEmpty().withMessage('Model is required'),
   ],
   authenticateToken,
   async (req, res) => {
@@ -419,8 +445,26 @@ router.post(
         return res.status(400).json({ errors: errors.array() });
       }
 
-      const { prompt, chatId } = req.body;
+
+      const { prompt, chatId, provider, model } = req.body;
       const userId = req.user.id;
+
+      console.log("provider", provider);
+
+      let openai;
+      if (provider === "Gemini") {
+        openai = new OpenAI({
+          apiKey: process.env.GEMINI_API_KEY,
+          baseURL: "https://generativelanguage.googleapis.com/v1beta/openai/",
+
+        });
+
+      }
+      else {
+        openai = new OpenAI({
+          apiKey: process.env.OPENAI_API_KEY
+        });
+      }
 
       // ✅ Check monthly limit
       if (req.user.apiUsage >= req.user.monthlyLimit) {
@@ -430,22 +474,117 @@ router.post(
         });
       }
 
-      // Generate image using OpenAI DALL-E
-      let imageUrl, tokens = 1000; // Fixed cost for image generation
+      // Generate image using OpenAI DALL-E with timeout
+      let imageUrl, tokens = 1000;
+      if (provider === "Gemini") {
 
-      try {
-        const response = await openai.images.generate({
-          model: 'dall-e-3',
-          prompt: prompt,
-          n: 1,
-          size: '1024x1024',
-          quality: 'standard'
-        });
 
-        imageUrl = response.data[0].url;
-      } catch (openaiError) {
-        console.error('OpenAI Image API error:', openaiError);
-        return res.status(500).json({ error: 'Image generation failed. Please check your OpenAI API key.' });
+        try {
+          // Add timeout to prevent hanging
+          const timeoutPromise = new Promise((_, reject) => {
+            setTimeout(() => reject(new Error('Image generation timeout')), 30000); // 30 second timeout
+          });
+
+
+
+          const imagePromise = openai.images.generate({
+            model: "imagen-3.0-generate-002",
+            prompt: prompt,
+            response_format: "b64_json",
+            n: 1,
+            size: "1024x1024"
+          });
+
+          const response = await Promise.race([imagePromise, timeoutPromise]);
+
+          // Convert base64 to file and serve as URL to avoid large data in response
+          const base64Data = response.data[0].b64_json;
+
+          // Check if base64 data is too large (more than 10MB)
+          if (base64Data.length > 10 * 1024 * 1024) {
+            throw new Error('Generated image is too large');
+          }
+
+          // Save image to file system and return URL
+          const fs = require('fs').promises;
+          const path = require('path');
+
+          // Create uploads directory if it doesn't exist
+          const uploadsDir = path.join(__dirname, '../../uploads/images');
+          try {
+            await fs.mkdir(uploadsDir, { recursive: true });
+          } catch (err) {
+            // Directory might already exist
+          }
+
+          // Generate unique filename
+          const timestamp = Date.now();
+          const filename = `generated-${timestamp}-${Math.random().toString(36).substr(2, 9)}.png`;
+          const filepath = path.join(uploadsDir, filename);
+
+          // Convert base64 to buffer and save
+          const imageBuffer = Buffer.from(base64Data, 'base64');
+          await fs.writeFile(filepath, imageBuffer);
+
+          // Return full URL instead of base64 data
+          const baseUrl = process.env.BASE_URL || `http://localhost:${process.env.PORT || 5000}`;
+          imageUrl = `${baseUrl}/uploads/images/${filename}`;
+
+          // Optional: Clean up old images (older than 24 hours) to save disk space
+          try {
+            const files = await fs.readdir(uploadsDir);
+            const now = Date.now();
+            const oneDayAgo = now - (24 * 60 * 60 * 1000);
+
+            for (const file of files) {
+              if (file.startsWith('generated-')) {
+                const filePath = path.join(uploadsDir, file);
+                const stats = await fs.stat(filePath);
+                if (stats.mtime.getTime() < oneDayAgo) {
+                  await fs.unlink(filePath);
+                  console.log(`Cleaned up old image: ${file}`);
+                }
+              }
+            }
+          } catch (cleanupError) {
+            console.warn('Image cleanup failed:', cleanupError.message);
+          }
+
+          // Validate the image URL
+          if (!imageUrl || (!imageUrl.startsWith('http') && !imageUrl.startsWith('data:'))) {
+            throw new Error('Invalid image URL received from API');
+          }
+
+          console.log('Image generated successfully:', imageUrl.substring(0, 100) + '...');
+
+        } catch (openaiError) {
+          console.error('OpenAI Image API error:', openaiError);
+
+          if (openaiError.message === 'Image generation timeout') {
+            return res.status(408).json({ error: 'Image generation timed out. Please try again.' });
+          }
+
+          return res.status(500).json({
+            error: 'Image generation failed. Please try again.',
+            details: openaiError.message
+          });
+        }
+      }
+      else {
+        try {
+          const response = await openai.images.generate({
+            model: 'dall-e-3',
+            prompt: prompt,
+            n: 1,
+            size: '1024x1024',
+            quality: 'standard'
+          });
+
+          imageUrl = response.data[0].url;
+        } catch (openaiError) {
+          console.error('OpenAI Image API error:', openaiError);
+          return res.status(500).json({ error: 'Image generation failed. Please check your OpenAI API key.' });
+        }
       }
 
       // ✅ Save messages if chatId provided
