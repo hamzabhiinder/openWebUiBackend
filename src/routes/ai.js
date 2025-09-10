@@ -687,9 +687,11 @@ router.post(
         console.log('📡 Calling internal video service...');
 
         // Make call to the video generation service
+
         const baseUrl = process.env.BASE_URL || `http://localhost:${process.env.PORT || 5000}`;
-        let video_url = `${baseUrl}/api/video/generate`;
-        const videoResponse = await axios.post(video_url, {
+        let url = `${baseUrl}/api/video/generate`;
+
+        const videoResponse = await axios.post(url, {
           prompt,
           aspect_ratio,
           negative_prompt
@@ -770,6 +772,8 @@ router.post(
 
         // Handle specific video service errors
         if (videoServiceError.code === 'ECONNREFUSED') {
+          console.log("videoServiceError", videoServiceError);
+
           return res.status(503).json({
             error: 'Video generation service is not available. Please try again later.'
           });
@@ -806,10 +810,10 @@ router.get('/video-status/:operationId', authenticateToken, async (req, res) => 
 
     // ✅ Make internal API call to video service
     const axios = require('axios');
+    const baseUrl = process.env.BASE_URL || `http://localhost:${process.env.PORT || 5000}`;
+    let url = `${baseUrl}/api/video/status/${operationId}`;
 
     try {
-      const baseUrl = process.env.BASE_URL || `http://localhost:${process.env.PORT || 5000}`;
-      let url = `${baseUrl}/api/video/generate/status/${operationId}`;
       const statusResponse = await axios.get(url, {
         headers: {
           'Authorization': req.headers.authorization
