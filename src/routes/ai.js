@@ -39,7 +39,29 @@ router.get('/models', async (req, res) => {
     res.status(500).json({ error: 'Failed to fetch AI models' });
   }
 });
+// ...existing imports...
 
+// Add helper: count ApiUsage records (completed calls) for current calendar month
+// Add this helper close to the top with other helpers/imports:
+//if want to use api usage for free plan
+async function countMonthlyApiCalls(userId) {
+  const now = new Date();
+  const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+  const startOfNextMonth = new Date(now.getFullYear(), now.getMonth() + 1, 1);
+
+  const count = await prisma.apiUsage.count({
+    where: {
+      userId,
+      timestamp: {
+        gte: startOfMonth,
+        lt: startOfNextMonth
+      }
+    }
+  });
+  return count;
+}
+
+// ...existing code...
 /*
 router.post(
   '/generate',
@@ -251,8 +273,7 @@ router.post(
     body('chatId').optional().isString(),
     body('files').optional().isArray(),
   ],
-  optionalAuth,      // try to attach user if token exists
-  trackAnonUsage,    // only applies if not authenticated
+  authenticateToken,
   async (req, res) => {
     try {
       const errors = validationResult(req);
@@ -282,12 +303,51 @@ router.post(
 
 
       // ✅ Check monthly limit
-     if (isAuth && req.user.apiUsage >= req.user.monthlyLimit) {
-        return res.status(429).json({
-          error: 'Monthly API limit exceeded',
-          usage: { current: req.user.apiUsage, limit: req.user.monthlyLimit },
-        });
+// inside POST '/generate' handler, after you determine isAuth and userId:
+// Example: inside POST '/generate' handler after determining isAuth and userId
+
+if (isAuth) {
+  if (req.user.plan === 'FREE') {
+    //if want to use api usage for free plan
+
+    // Enforce per-month call limit (completed ApiUsage rows)
+    
+    // const monthlyCalls = await countMonthlyApiCalls(userId);
+    // const allowedCalls = req.user.monthlyCallLimit ?? 3; // fallback
+    // if (allowedCalls > 0 && monthlyCalls >= allowedCalls) {
+    //   return res.status(429).json({
+    //     error: 'Monthly API call limit exceeded for Free plan',
+    //     usage: { current: monthlyCalls, limit: allowedCalls }
+    //   });
+    // }
+    const result = await prisma.user.updateMany({
+      where: {
+        id: userId,
+        monthlyCallLimit: { gt: 0 }
+      },
+      data: {
+        monthlyCallLimit: { decrement: 1 }
       }
+    });
+
+    if (!result || result.count === 0) {
+      // No remaining free calls
+      return res.status(429).json({
+        error: 'Free monthly queries exhausted. Please upgrade to continue.',
+        remaining: 0
+      });
+    }
+
+  } else {
+    // Paid plans: enforce token-based monthlyLimit as before
+    if (req.user.apiUsage >= req.user.monthlyLimit) {
+      return res.status(429).json({
+        error: 'Monthly API limit exceeded',
+        usage: { current: req.user.apiUsage, limit: req.user.monthlyLimit },
+      });
+    }
+  }
+}
 
       // ✅ Process attached files
       let processedFiles = [];
@@ -382,9 +442,9 @@ Example: $x^2 + 3x$ is output for "x² + 3x" to appear as TeX.`
 
 
          // Send anonymous quota meta early (if anon)
-      if (req.anonymous) {
-        res.write(`data: ${JSON.stringify({ type: 'meta', anon: { remaining: req.anonymous.remaining, limit: req.anonymous.limit } })}\n\n`);
-      }
+      // if (req.anonymous) {
+      //   res.write(`data: ${JSON.stringify({ type: 'meta', anon: { remaining: req.anonymous.remaining, limit: req.anonymous.limit } })}\n\n`);
+      // }
       // Call OpenAI API
       let fullResponseContent = '';
       let tokens = 0;
@@ -1010,7 +1070,7 @@ router.get('/video-status/:operationId', authenticateToken, async (req, res) => 
 });
 // ADD helper (place above router.post('/generate', or near top)
 async function resolveAnonQuota(req, res) {
-  const DEFAULT_LIMIT = parseInt(process.env.ANON_FREE_QUERIES || '5', 10);
+  const DEFAULT_LIMIT = parseInt(process.env.ANON_FREE_QUERIES || '2', 10);
   const anonCookieName = 'anon_id';
 
   // Parse cookie header manually (in case cookie-parser not yet applied)
