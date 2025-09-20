@@ -48,7 +48,6 @@ class AIService {
                 model: model,
                 messages: messages,
                 stream: true,
-                temperature: temperature || 0.7,
             };
 
 
