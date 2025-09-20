@@ -54,12 +54,12 @@ class AIService {
             if (model.includes('gpt-5')) {
 
                 console.log(`Using special parameter 'max_completion_tokens' for model: ${model}`);
-                payload.max_completion_tokens = 4096;
+                payload.max_completion_tokens = 8192;
 
             } else {
 
                 console.log(`Using standard parameter 'max_tokens' for model: ${model}`);
-                payload.max_tokens = 4096;
+                payload.max_tokens = 8192;
             }
             const stream = await client.chat.completions.create(payload);
 
