@@ -7,6 +7,9 @@ const fs = require('fs');
 const prisma = require('../config/database');
 const { GoogleGenAI, Modality } = require("@google/genai");
 const path = require('path');
+const axios = require('axios');
+const FormData = require('form-data');
+
 class AIService {
     /**
      * Provider ke naam ke hisab se sahi configured AI client return karta hai.
@@ -186,6 +189,123 @@ Do not include any other text or explanations in your response. Just the JSON ob
         }
     }
 
+    // Helper: Upload file to OpenAI
+    async uploadFileToContainer(filepath, containerId) {
+        const form = new FormData();
+        form.append('file', fs.createReadStream(filepath));
+
+        const response = await axios.post(
+            `https://api.openai.com/v1/containers/${containerId}/files`,
+            form,
+            {
+                headers: {
+                    ...form.getHeaders(), // include multipart/form-data headers
+                    Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+                },
+                maxContentLength: Infinity,
+                maxBodyLength: Infinity,
+            }
+        );
+
+        return response.data; // contains file ID
+    }
+
+
+    async generateChartWithCodeInterpreter(messages, fileId) {
+        const client = this.getClient("OpenAI");
+
+        // Combine messages into a single string prompt for the 'input' field
+        const prompt = messages.map(m => `${m.role}: ${m.content}`).join('\\n\\n');
+        let instructions = `
+You are a data visualization expert. Based on the conversation history, when asked to create a chart or graph,
+write and run Python code to generate the visualization.
+You must save the output as an image file and provide a reference to it.
+You are a professional developer; I will give you a scenario, you understand that and create a chart accordingly. Whenever a chart or graph is discussed, you write and run code using the python tool to answer the question.
+`;
+
+        let containerId = null;
+        let tempContainer = null;
+
+        if (fileId) {
+            const fileRecord = await prisma.file.findUnique({ where: { id: fileId } });
+            if (!fileRecord || !fs.existsSync(fileRecord.path)) {
+                throw new Error("File not found or path is invalid for chart generation.");
+            }
+
+            tempContainer = await client.containers.create({
+                name: `chart-gen-container-${Date.now()}`,
+            });
+            containerId = tempContainer.id;
+
+            await this.uploadFileToContainer(fileRecord.path, containerId);
+            console.log(`File ${fileRecord.originalName} uploaded to container ${containerId} for chart generation.`);
+
+            // Update instructions to inform the AI about the uploaded file
+            instructions += `\n\nA file named '${fileRecord.originalName}' has been uploaded and is available in your environment. Please use this file to generate the requested chart.`;
+        }
+
+        const resp = await client.responses.create({
+            model: "gpt-4.1",
+            tools: [
+                {
+                    type: "code_interpreter",
+                    container: containerId ? containerId : { type: "auto" },
+                },
+            ],
+            instructions,
+            input: prompt,
+        });
+
+        let pythonCode = null;
+        let imageUrl = null;
+
+
+        // Find the code and the file citation from the response
+        for (const output of resp.output) {
+            if (output.type === 'code_interpreter_call') {
+                pythonCode = output.code;
+
+            }
+            if (output.type === 'message' && output.content) {
+                for (const contentItem of output.content) {
+                    if (contentItem.annotations) {
+                        for (const annotation of contentItem.annotations) {
+                            if (annotation.type === 'container_file_citation') {
+                                const { file_id, container_id } = annotation;
+                                if (file_id && container_id) {
+                                    console.log(`Found file citation: container_id=${container_id}, file_id=${file_id}`);
+
+                                    // Download the image
+                                    const downloadUrl = `https://api.openai.com/v1/containers/${container_id}/files/${file_id}/content`;
+                                    const imageResponse = await axios.get(downloadUrl, {
+                                        headers: { 'Authorization': `Bearer ${process.env.OPENAI_API_KEY}` },
+                                        responseType: 'arraybuffer'
+                                    });
+
+                                    // Save the image to local storage
+                                    const uploadsDir = path.join(__dirname, '../../uploads/images');
+                                    await fs.promises.mkdir(uploadsDir, { recursive: true });
+
+                                    const timestamp = Date.now();
+                                    const filename = `chart-${timestamp}.png`;
+                                    const filepath = path.join(uploadsDir, filename);
+
+                                    await fs.promises.writeFile(filepath, imageResponse.data);
+
+                                    // Construct the accessible URL
+                                    const baseUrl = process.env.BASE_URL || `http://localhost:${process.env.PORT || 5000}`;
+                                    imageUrl = `${baseUrl}/uploads/images/${filename}`;
+                                    console.log(`Image saved successfully at: ${imageUrl}`);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        return { imageUrl, pythonCode, response: resp.output };
+    }
 }
 
 
