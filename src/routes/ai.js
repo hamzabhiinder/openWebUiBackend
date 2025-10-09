@@ -393,7 +393,8 @@ router.post(
                 name: file.originalName,
                 extractedText: file.extractedText,
                 mimeType: file.mimeType,
-                openaiFileId: file.openaiFileId
+                openaiFileId: file.openaiFileId,
+                path: file.path
               };
             }
             return null;
@@ -569,7 +570,8 @@ Example: $x^2 + 3x$ is output for "x² + 3x" to appear as TeX.`
           messages,
           res,
           signal,
-          temperature: actualTemperature
+          temperature: actualTemperature,
+          files: processedFiles
         });
       } catch (apiError) {
         if (apiError && typeof apiError === 'object' && 'name' in apiError && apiError.name === 'AbortError') {
@@ -589,14 +591,30 @@ Example: $x^2 + 3x$ is output for "x² + 3x" to appear as TeX.`
 
     } catch (error) {
       console.error('AI generation error:', error);
-      res.status(500).json({ error: error.message || 'AI generation failed' });
+
+      // ✅ Check if headers were already sent (streaming started)
+      if (!res.headersSent) {
+        // Headers not sent yet, safe to send error response
+        res.status(500).json({ error: error.message || 'AI generation failed' });
+      } else {
+        // Headers already sent (streaming started), send error via SSE format
+        try {
+          res.write(`data: ${JSON.stringify({ error: error.message || 'AI generation failed' })}\n\n`);
+        } catch (writeError) {
+          console.error('Failed to write error to stream:', writeError);
+        }
+      }
     }
     finally {
       if (streamId) {
         streamControllers.delete(streamId);
         console.log(`Stream unregistered for ID: ${streamId}`);
       }
-      res.end();
+
+      // ✅ Only end response if not already ended
+      if (!res.writableEnded) {
+        res.end();
+      }
     }
   }
 );
