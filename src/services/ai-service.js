@@ -268,13 +268,12 @@ Do not include any other text or explanations in your response. Just the JSON ob
 
         // Combine messages into a single string prompt for the 'input' field
         const prompt = messages.map(m => `${m.role}: ${m.content}`).join('\\n\\n');
-        //         let instructions = `
-        // You are a data visualization expert. Based on the conversation history, when asked to create a chart or graph,
-        // write and run Python code to generate the visualization.
-        // You must save the output as an image file and provide a reference to it.
-        // You are a professional developer; I will give you a scenario, you understand that and create a chart accordingly. Whenever a chart or graph is discussed, you write and run code using the python tool to answer the question.
-        // `;
-        let instructions = `You are an expert presentation designer and educator. Your task is to generate a PowerPoint (.pptx) about any topic the user provides. You must:\n\n Use the code interpreter to generate the .pptx file using the python-pptx library.\n2️⃣ Use the image generation tool to create AI images for each slide (one image per slide, relevant and realistic).\n3️⃣ Include at least 12–15 slides covering the topic in detail.\n4️⃣ Each slide must have a clear title, short bullet points (6–7 max), and a relevant image.\n5️⃣ Use clean fonts like Calibri or Segoe UI, with good color contrast and layout spacing.\n6️⃣ Save the PowerPoint and respond with a downloadable file link (sandbox path).\n7️⃣ The tone should be clear, educational, and slightly formal — perfect for teaching or workshops. and use the google for pictures and images and generate file`;
+        let instructions = `
+        You are a data visualization expert. Based on the conversation history, when asked to create a chart or graph,
+        write and run Python code to generate the visualization.
+        You must save the output as an image file and provide a reference to it.
+        You are a professional developer; I will give you a scenario, you understand that and create a chart accordingly. Whenever a chart or graph is discussed, you write and run code using the python tool to answer the question.
+        `;
         let containerId = null;
         let tempContainer = null;
 
