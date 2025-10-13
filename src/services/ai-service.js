@@ -44,10 +44,10 @@ class AIService {
      */
     async prepareImageForVision(imagePath, mimeType) {
         try {
-            const fullPath = path.isAbsolute(imagePath) 
-                ? imagePath 
+            const fullPath = path.isAbsolute(imagePath)
+                ? imagePath
                 : path.join(__dirname, '../../', imagePath);
-            
+
             if (!fs.existsSync(fullPath)) {
                 console.error(`Image file not found: ${fullPath}`);
                 return null;
@@ -55,7 +55,7 @@ class AIService {
 
             const imageData = fs.readFileSync(fullPath);
             const base64Image = imageData.toString('base64');
-            
+
             return {
                 type: 'image_url',
                 image_url: {
@@ -86,12 +86,12 @@ class AIService {
 
             // Check if the user is asking for a chart
             const lastUserMessage = messages[messages.length - 1].content;
-            const lastMessageText = typeof lastUserMessage === 'string' 
-                ? lastUserMessage 
+            const lastMessageText = typeof lastUserMessage === 'string'
+                ? lastUserMessage
                 : lastUserMessage.find(item => item.type === 'text')?.text || '';
-            
+
             const chartKeywords = ['chart', 'graph', 'plot', 'diagram', 'visualize'];
-            const isChartRequest = chartKeywords.some(keyword => 
+            const isChartRequest = chartKeywords.some(keyword =>
                 lastMessageText.toLowerCase().includes(keyword)
             );
 
@@ -123,20 +123,20 @@ Do not include any other text or explanations in your response. Just the JSON ob
             // ✅ IMPROVED: Handle images properly for vision API
             if (files && files.length > 0) {
                 const imageFiles = files.filter(f => f.mimeType && f.mimeType.startsWith('image/'));
-                
+
                 if (imageFiles.length > 0) {
                     console.log(`📸 Processing ${imageFiles.length} image(s) for vision API`);
-                    
+
                     const lastMessage = messages[messages.length - 1];
-                    const textContent = typeof lastMessage.content === 'string' 
-                        ? lastMessage.content 
+                    const textContent = typeof lastMessage.content === 'string'
+                        ? lastMessage.content
                         : lastMessage.content.find(item => item.type === 'text')?.text || '';
-                    
+
                     // Build content array with text and images
                     const contentArray = [
                         { type: 'text', text: textContent }
                     ];
-                    
+
                     // Add all images to the content
                     for (const imageFile of imageFiles) {
                         const imageContent = await this.prepareImageForVision(imageFile.path, imageFile.mimeType);
@@ -145,7 +145,7 @@ Do not include any other text or explanations in your response. Just the JSON ob
                             console.log(`✅ Added image to vision API: ${imageFile.name}`);
                         }
                     }
-                    
+
                     lastMessage.content = contentArray;
                 }
             }
@@ -268,13 +268,13 @@ Do not include any other text or explanations in your response. Just the JSON ob
 
         // Combine messages into a single string prompt for the 'input' field
         const prompt = messages.map(m => `${m.role}: ${m.content}`).join('\\n\\n');
-        let instructions = `
-You are a data visualization expert. Based on the conversation history, when asked to create a chart or graph,
-write and run Python code to generate the visualization.
-You must save the output as an image file and provide a reference to it.
-You are a professional developer; I will give you a scenario, you understand that and create a chart accordingly. Whenever a chart or graph is discussed, you write and run code using the python tool to answer the question.
-`;
-
+        //         let instructions = `
+        // You are a data visualization expert. Based on the conversation history, when asked to create a chart or graph,
+        // write and run Python code to generate the visualization.
+        // You must save the output as an image file and provide a reference to it.
+        // You are a professional developer; I will give you a scenario, you understand that and create a chart accordingly. Whenever a chart or graph is discussed, you write and run code using the python tool to answer the question.
+        // `;
+        let instructions = `You are an expert presentation designer and educator. Your task is to generate a PowerPoint (.pptx) about any topic the user provides. You must:\n\n Use the code interpreter to generate the .pptx file using the python-pptx library.\n2️⃣ Use the image generation tool to create AI images for each slide (one image per slide, relevant and realistic).\n3️⃣ Include at least 12–15 slides covering the topic in detail.\n4️⃣ Each slide must have a clear title, short bullet points (6–7 max), and a relevant image.\n5️⃣ Use clean fonts like Calibri or Segoe UI, with good color contrast and layout spacing.\n6️⃣ Save the PowerPoint and respond with a downloadable file link (sandbox path).\n7️⃣ The tone should be clear, educational, and slightly formal — perfect for teaching or workshops. and use the google for pictures and images and generate file`;
         let containerId = null;
         let tempContainer = null;
 
