@@ -52,7 +52,6 @@
     "pdf-parse": "^1.1.1",
     "pptxgenjs": "^4.0.1",
     "prisma": "^6.11.1",
-    "google-it": "^1.6.4",
     "sharp": "^0.34.3",
     "stripe": "^18.3.0",
     "tesseract.js": "^5.0.4",

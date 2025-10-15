@@ -3,7 +3,6 @@ const { body, validationResult } = require('express-validator');
 const { authenticateToken } = require('../middleware/auth');
 const prisma = require('../config/database');
 const aiService = require('../services/ai-service');
-const pptService = require('../services/ppt-service');
 const OpenAI = require('openai');
 const usageService = require("../services/usage-service");
 const { optionalAuth } = require('../middleware/optionalAuth');
@@ -323,81 +322,6 @@ router.post(
       }
 
       const { model, prompt, chatId, files, provider } = req.body;
-
-      // Use AI to detect intent
-      const intentDetectionCompletion = await aiService.getClient(provider).chat.completions.create({
-        model: 'gpt-4o-mini', // Use a fast model for intent detection
-        messages: [
-          {
-            role: 'system',
-            content: `You are an intent detection expert. Analyze the user's prompt and determine if they want to create a PowerPoint presentation. Respond with "CREATE_PRESENTATION" if they do, and "GENERAL_CHAT" otherwise. Do not provide any other text or explanation.`
-          },
-          { role: 'user', content: prompt }
-        ],
-        temperature: 0,
-      });
-
-      const intent = intentDetectionCompletion.choices[0].message.content.trim();
-
-      if (intent === "CREATE_PRESENTATION") {
-        try {
-          // Save user's prompt first
-          if (chatId) {
-            await prisma.message.create({
-              data: {
-                chatId,
-                role: 'USER',
-                content: prompt,
-              }
-            });
-          }
-
-          const pptResult = await pptService.generatePresentation(prompt, {
-            userId: req.user.id,
-            chatId: chatId
-          });
-          const downloadUrl = pptService.getDownloadUrl(pptResult.fileName);
-
-          const assistantContent = `I have created a PowerPoint presentation for you on the topic: "${prompt}". You can download it using the link below.`;
-
-          if (chatId) {
-            await prisma.message.create({
-              data: {
-                chatId,
-                role: 'ASSISTANT',
-                content: assistantContent,
-                files: JSON.stringify([{
-                  type: 'presentation',
-                  filename: pptResult.fileName,
-                  downloadUrl: downloadUrl,
-                  slideCount: pptResult.slideCount,
-                  topic: prompt,
-                  generatedAt: new Date().toISOString(),
-                  presentationData: pptResult.presentationData
-                }])
-              }
-            });
-          }
-
-          return res.json({
-            success: true,
-            message: 'PowerPoint presentation generated successfully.',
-            type: 'presentation',
-            fileName: pptResult.fileName,
-            downloadUrl: downloadUrl,
-            slideCount: pptResult.slideCount,
-            topic: prompt,
-            assistantResponse: assistantContent,
-            presentationData: pptResult.presentationData
-          });
-        } catch (error) {
-          console.error('💥 PPT generation error:', error);
-          return res.status(500).json({
-            error: error.message || 'PowerPoint generation failed'
-          });
-        }
-      }
-
       const isAuth = !!req.user;
       const userId = isAuth ? req.user.id : null;
       const canPersist = isAuth && !!chatId;
@@ -1821,6 +1745,121 @@ router.post("/createVisualizeChart", async (req, res) => {
 });
 
 
+// ✅ Generate PowerPoint Presentation
+router.post(
+  '/generate-ppt',
+  [
+    body('prompt').trim().notEmpty().withMessage('Prompt is required'),
+    body('chatId').isString().withMessage('chatId is required'),
+    body('provider').optional().isString(),
+    body('model').optional().isString(),
+  ],
+  authenticateToken,
+  async (req, res) => {
+    try {
+      const errors = validationResult(req);
+      if (!errors.isEmpty()) {
+        return res.status(400).json({ errors: errors.array() });
+      }
+
+      const { prompt, chatId, provider = 'OpenAI', model = 'gpt-4o' } = req.body;
+      const userId = req.user.id;
+
+      console.log('📊 PPT generation request:', { prompt, chatId, provider, model });
+
+      // Check monthly limit
+      if (req.user.plan === 'FREE') {
+        const result = await prisma.user.updateMany({
+          where: {
+            id: userId,
+            monthlyCallLimit: { gt: 0 }
+          },
+          data: {
+            monthlyCallLimit: { decrement: 1 }
+          }
+        });
+
+        if (!result || result.count === 0) {
+          return res.status(429).json({
+            error: 'Free monthly queries exhausted. Please upgrade to continue.',
+            remaining: 0
+          });
+        }
+      } else {
+        if (req.user.apiUsage >= req.user.monthlyLimit) {
+          return res.status(429).json({
+            error: 'Monthly API limit exceeded',
+            usage: { current: req.user.apiUsage, limit: req.user.monthlyLimit },
+          });
+        }
+      }
+
+      // Save user message
+      await prisma.message.create({
+        data: {
+          chatId,
+          role: 'USER',
+          content: prompt,
+        }
+      });
+
+      // Generate PPT using AI service
+      const pptResult = await aiService.generatePPT(prompt, provider, model);
+
+      // Save assistant message with PPT data
+      const assistantMessage = await prisma.message.create({
+        data: {
+          chatId,
+          role: 'ASSISTANT',
+          content: `Generated presentation: "${pptResult.structure.title}" with ${pptResult.slideCount} slides`,
+          tokens: 1000,
+          files: JSON.stringify([{
+            type: 'presentation',
+            filename: pptResult.filename,
+            downloadUrl: pptResult.downloadUrl,
+            slideCount: pptResult.slideCount,
+            title: pptResult.structure.title,
+            structure: pptResult.structure
+          }])
+        }
+      });
+
+      // Update chat title
+      const chat = await prisma.chat.findUnique({ where: { id: chatId } });
+      if (chat) {
+        await prisma.chat.update({
+          where: { id: chatId },
+          data: {
+            updatedAt: new Date(),
+            title: chat.title === 'New Chat'
+              ? `PPT: ${prompt.slice(0, 30)}${prompt.length > 30 ? '...' : ''}`
+              : chat.title
+          }
+        });
+      }
+
+      // Track usage
+      const tokens = 1000;
+      await usageService.recordUsage(userId, model, tokens, tokens * 0.001);
+
+      console.log('✅ PPT generated and saved successfully');
+
+      res.json({
+        message: 'PPT generated successfully',
+        filename: pptResult.filename,
+        downloadUrl: pptResult.downloadUrl,
+        slideCount: pptResult.slideCount,
+        structure: pptResult.structure,
+        assistantMessage
+      });
+
+    } catch (error) {
+      console.error('❌ PPT generation error:', error);
+      res.status(500).json({ error: error.message || 'PPT generation failed' });
+    }
+  }
+);
+
 router.post(
   '/generate-chart',
   [
@@ -1942,177 +1981,6 @@ router.post(
     } catch (error) {
       console.error('Chart generation error:', error);
       res.status(500).json({ error: error.message || 'Chart generation failed' });
-    }
-  }
-);
-
-// ✅ Generate PowerPoint Presentation
-router.post(
-  '/generate-ppt',
-  [
-    body('prompt').trim().notEmpty().withMessage('Prompt is required'),
-    body('chatId').optional().isString(),
-    body('topic').optional().isString(),
-  ],
-  authenticateToken,
-  async (req, res) => {
-    try {
-      const errors = validationResult(req);
-      if (!errors.isEmpty()) {
-        return res.status(400).json({ errors: errors.array() });
-      }
-
-      const { prompt, chatId, topic } = req.body;
-      const userId = req.user.id;
-
-      console.log('📊 PPT generation request:', { prompt, topic, userId, chatId });
-
-      // ✅ Check monthly limit
-      if (req.user.plan === 'FREE') {
-        const result = await prisma.user.updateMany({
-          where: {
-            id: userId,
-            monthlyCallLimit: { gt: 0 }
-          },
-          data: {
-            monthlyCallLimit: { decrement: 1 }
-          }
-        });
-
-        if (!result || result.count === 0) {
-          return res.status(429).json({
-            error: 'Free monthly queries exhausted. Please upgrade to continue.',
-            remaining: 0
-          });
-        }
-      } else {
-        if (req.user.apiUsage >= req.user.monthlyLimit) {
-          return res.status(429).json({
-            error: 'Monthly PPT generation limit exceeded',
-            usage: { current: req.user.apiUsage, limit: req.user.monthlyLimit }
-          });
-        }
-      }
-
-      // Determine the topic from prompt or use provided topic
-      const presentationTopic = topic || prompt;
-
-      // Save user message first
-      let chat;
-      if (chatId) {
-        chat = await prisma.chat.findFirst({ where: { id: chatId, userId } });
-        if (!chat) {
-          return res.status(404).json({ error: 'Chat not found' });
-        }
-
-        await prisma.message.create({
-          data: {
-            chatId,
-            role: 'USER',
-            content: prompt,
-          }
-        });
-      }
-
-      // Generate PowerPoint presentation
-      const pptResult = await pptService.generatePresentation(presentationTopic, {
-        userId: userId,
-        chatId: chatId
-      });
-
-      // Get download URL
-      const downloadUrl = pptService.getDownloadUrl(pptResult.fileName);
-
-      // Save assistant message with PPT info
-      if (chatId) {
-        await prisma.message.create({
-          data: {
-            chatId,
-            role: 'ASSISTANT',
-            content: `PowerPoint presentation created successfully: "${presentationTopic}"`,
-            tokens: 1000, // Fixed token count for PPT generation
-            files: JSON.stringify([{
-              type: 'presentation',
-              filename: pptResult.fileName,
-              downloadUrl: downloadUrl,
-              slideCount: pptResult.slideCount,
-              topic: presentationTopic,
-              generatedAt: new Date().toISOString()
-            }])
-          }
-        });
-
-        // Update chat title
-        await prisma.chat.update({
-          where: { id: chatId },
-          data: {
-            updatedAt: new Date(),
-            title: chat.title === 'New Chat'
-              ? `PPT: ${presentationTopic.slice(0, 30)}${presentationTopic.length > 30 ? '...' : ''}`
-              : chat.title
-          }
-        });
-      }
-
-      // Track usage
-      const tokens = 1000; // Fixed token count for PPT generation
-      await prisma.apiUsage.create({
-        data: {
-          userId,
-          model: 'ppt-generator',
-          tokens,
-          cost: tokens * 0.001
-        }
-      });
-
-      const updatedUser = await prisma.user.update({
-        where: { id: userId },
-        data: { apiUsage: { increment: tokens } }
-      });
-
-      console.log('✅ PPT generation completed successfully');
-
-      const relativePath = `uploads/presentations/${pptResult.fileName}`;
-
-      res.json({
-        success: true,
-        message: 'PowerPoint presentation generated successfully',
-        fileName: pptResult.fileName,
-        filePath: relativePath,
-        downloadUrl: downloadUrl,
-        slideCount: pptResult.slideCount,
-        topic: presentationTopic,
-        presentationData: pptResult.presentationData,
-        tokens,
-        usage: {
-          current: updatedUser.apiUsage,
-          limit: updatedUser.monthlyLimit
-        }
-      });
-
-    } catch (error) {
-      console.error('💥 PPT generation error:', error);
-
-      // If there was an error after saving user message, save error message too
-      // if (chatId) {
-      //   try {
-      //     await prisma.message.create({
-      //       data: {
-      //         chatId,
-      //         role: 'ASSISTANT',
-      //         content: `PowerPoint generation failed: ${error.message}`,
-      //         tokens: 0
-      //       }
-      //     });
-      //   } catch (dbError) {
-      //     console.error('Error saving error message to chat:', dbError);
-      //   }
-      // }
-
-      res.status(500).json({
-        error: error.message || 'PowerPoint generation failed',
-        details: 'Please try again with a more specific topic'
-      });
     }
   }
 );

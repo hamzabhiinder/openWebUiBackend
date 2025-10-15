@@ -8,6 +8,7 @@ const { GoogleGenAI, Modality } = require("@google/genai");
 const path = require('path');
 const axios = require('axios');
 const FormData = require('form-data');
+const PptxGenJS = require('pptxgenjs');
 
 class AIService {
     /**
@@ -242,6 +243,36 @@ Do not include any other text or explanations in your response. Just the JSON ob
         }
     }
 
+    /**
+     * Generate an image using DALL-E
+     * @param {string} prompt - Text prompt for image generation
+     * @param {string} provider - AI provider
+     * @param {string} model - AI model
+     * @returns {Promise<string|null>} - Base64 encoded image or null
+     */
+    async generateImage(prompt, provider = "OpenAI", model = "dall-e-3") {
+        try {
+            const client = this.getClient(provider);
+            console.log(`🎨 Generating image with DALL-E for prompt: "${prompt}"`);
+
+            const response = await client.images.generate({
+                model: model,
+                prompt: prompt,
+                n: 1,
+                size: "1024x1024",
+                quality: "standard",
+                response_format: "b64_json",
+            });
+
+            const image_b64 = response.data[0].b64_json;
+            return image_b64;
+
+        } catch (error) {
+            console.error('❌ Error generating image with DALL-E:', error.message);
+            return null; // Return null if image generation fails
+        }
+    }
+
     // Helper: Upload file to OpenAI
     async uploadFileToContainer(filepath, containerId) {
         const form = new FormData();
@@ -263,17 +294,294 @@ Do not include any other text or explanations in your response. Just the JSON ob
         return response.data;
     }
 
+    /**
+     * Generate a PowerPoint presentation using AI
+     * @param {string} prompt - User's request for PPT content
+     * @param {string} provider - AI provider to use
+     * @param {string} model - AI model to use
+     * @returns {Promise<object>} - Generated PPT file information
+     */
+    async generatePPT(prompt, provider = "OpenAI", model = "gpt-4o") {
+        try {
+            const client = this.getClient(provider);
+
+            // Create a detailed prompt for generating PPT structure
+            const systemMessage = {
+                role: 'system',
+                content: `You are an expert presentation creator. When asked to create a PowerPoint presentation, you must respond with a JSON object that contains the presentation structure. The JSON should have this format:
+{
+  "title": "Presentation Title",
+  "slides": [
+    {
+      "type": "title",
+      "title": "Main Title",
+      "subtitle": "A concise and engaging subtitle for the presentation"
+    },
+    {
+      "type": "content",
+      "title": "Slide Title",
+      "content": [
+        "First detailed bullet point explaining a key concept.",
+        "Second bullet point elaborating on the previous one with examples.",
+        "Third bullet point providing further insights or data.",
+        "Fourth conclusive bullet point summarizing the slide's topic."
+      ]
+    },
+    {
+      "type": "two-column",
+      "title": "Comparative Analysis",
+      "leftContent": ["Point 1 with details", "Point 2 with details"],
+      "rightContent": ["Counter-point A with details", "Counter-point B with details"]
+    },
+    {
+      "type": "content-with-image",
+      "title": "Visualizing the Concept",
+      "content": ["Bullet point explaining the visual.", "Another point on its importance."],
+      "imagePrompt": "A photorealistic image of a modern office with people collaborating."
+    }
+  ]
+}
+
+Available slide types: "title", "content", "two-column", "content-with-image".
+For "content-with-image" slides, provide a concise, descriptive \`imagePrompt\` for DALL-E to generate a relevant image.
+The first slide must always be of type "title" and must include a subtitle.
+Generate 5-10 slides based on the topic. For each content slide, generate at least 4-6 meaningful and detailed bullet points.
+The content should be clear, concise, professional, and easy to understand.
+Only respond with the JSON object, no additional text.`
+            };
+
+            const messages = [
+                systemMessage,
+                {
+                    role: 'user',
+                    content: `Create a professional PowerPoint presentation about: ${prompt}`
+                }
+            ];
+
+            console.log('🎨 Generating PPT structure with AI...');
+
+            const response = await client.chat.completions.create({
+                model: model,
+                messages: messages
+            });
+
+            const aiResponse = response.choices[0].message.content;
+
+            // Parse JSON response
+            let pptStructure;
+            try {
+                // Try to extract JSON if wrapped in markdown code blocks
+                const jsonMatch = aiResponse.match(/```(?:json)?\s*([\s\S]*?)\s*```/);
+                const jsonString = jsonMatch ? jsonMatch[1] : aiResponse;
+                pptStructure = JSON.parse(jsonString.trim());
+            } catch (parseError) {
+                console.error('Failed to parse AI response as JSON:', parseError);
+                throw new Error('AI did not return valid JSON structure');
+            }
+
+            // Generate the actual PPT file
+            const ppt = new PptxGenJS();
+
+            // Set presentation properties
+            ppt.author = 'AI Assistant';
+            ppt.company = 'Your Company';
+            ppt.subject = pptStructure.title || 'AI Generated Presentation';
+            ppt.title = pptStructure.title || 'Presentation';
+
+            // Define color scheme
+            const colors = {
+                primary: '0078D4',
+                secondary: '4A5568',
+                accent: '38B2AC',
+                background: 'FFFFFF',
+                text: '1A202C'
+            };
+
+            const timestamp = Date.now();
+
+            // Process each slide
+            for (const [index, slideData] of pptStructure.slides.entries()) {
+                const slide = ppt.addSlide();
+
+                // Add a slide master for consistent branding
+                slide.addText(`Slide ${slide.slideNumber}`, {
+                    x: 0.5, y: '95%', w: '90%', h: 0.25,
+                    align: 'center', fontSize: 10, color: colors.secondary
+                });
+
+
+                if (slideData.type === 'title') {
+                    // Title slide
+                    slide.background = { color: colors.primary };
+                    slide.addText(slideData.title, {
+                        x: 0.5,
+                        y: 2.0,
+                        w: 9.0,
+                        h: 1.5,
+                        fontSize: 44,
+                        bold: true,
+                        color: 'FFFFFF',
+                        align: 'center'
+                    });
+                    if (slideData.subtitle) {
+                        slide.addText(slideData.subtitle, {
+                            x: 0.5,
+                            y: 3.8,
+                            w: 9.0,
+                            h: 0.8,
+                            fontSize: 24,
+                            color: 'FFFFFF',
+                            align: 'center'
+                        });
+                    }
+                } else if (slideData.type === 'content') {
+                    // Content slide with bullet points
+                    slide.addText(slideData.title, {
+                        x: 0.5,
+                        y: 0.5,
+                        w: 9.0,
+                        h: 0.8,
+                        fontSize: 32,
+                        bold: true,
+                        color: colors.primary
+                    });
+
+                    const bulletPoints = slideData.content.map(point => ({
+                        text: point,
+                        options: { bullet: true, fontSize: 18, color: colors.text }
+                    }));
+
+                    slide.addText(bulletPoints, {
+                        x: 0.5,
+                        y: 1.5,
+                        w: 9.0,
+                        h: 4.0,
+                        fontSize: 18,
+                        color: colors.text
+                    });
+                } else if (slideData.type === 'two-column') {
+                    // Two-column slide
+                    slide.addText(slideData.title, {
+                        x: 0.5,
+                        y: 0.5,
+                        w: 9.0,
+                        h: 0.8,
+                        fontSize: 32,
+                        bold: true,
+                        color: colors.primary
+                    });
+
+                    // Left column
+                    const leftBullets = slideData.leftContent.map(point => ({
+                        text: point,
+                        options: { bullet: true, fontSize: 16, color: colors.text }
+                    }));
+                    slide.addText(leftBullets, {
+                        x: 0.5,
+                        y: 1.5,
+                        w: 4.25,
+                        h: 4.0
+                    });
+
+                    // Right column
+                    const rightBullets = slideData.rightContent.map(point => ({
+                        text: point,
+                        options: { bullet: true, fontSize: 16, color: colors.text }
+                    }));
+                    slide.addText(rightBullets, {
+                        x: 5.25,
+                        y: 1.5,
+                        w: 4.25,
+                        h: 4.0
+                    });
+                } else if (slideData.type === 'content-with-image') {
+                    // Content slide with an image
+                    slide.addText(slideData.title, {
+                        x: 0.5, y: 0.5, w: 9.0, h: 0.8,
+                        fontSize: 32, bold: true, color: colors.primary
+                    });
+
+                    // Text content on the left
+                    const bulletPoints = (slideData.content || []).map(point => ({
+                        text: point,
+                        options: { bullet: true, fontSize: 16, color: colors.text }
+                    }));
+                    slide.addText(bulletPoints, {
+                        x: 0.5, y: 1.5, w: 4.5, h: 4.0
+                    });
+
+                    // Image on the right
+                    if (slideData.imagePrompt) {
+                        console.log(`🖼️ Generating image for slide: "${slideData.title}"`);
+                        const imageB64 = await this.generateImage(slideData.imagePrompt);
+                        if (imageB64) {
+                            // Add image to PPTX from base64
+                            slide.addImage({
+                                data: `data:image/png;base64,${imageB64}`,
+                                x: 5.5, y: 1.5, w: 4.0, h: 4.0,
+                            });
+
+                            // Save the image to a file for frontend access
+                            try {
+                                const imageBuffer = Buffer.from(imageB64, 'base64');
+                                const imagesDir = path.join(__dirname, '../../uploads/images');
+                                await fs.promises.mkdir(imagesDir, { recursive: true });
+                                const imageFilename = `ppt-image-${timestamp}-${index}.png`;
+                                const imageFilepath = path.join(imagesDir, imageFilename);
+                                await fs.promises.writeFile(imageFilepath, imageBuffer);
+
+                                // Update the slide data with the public URL
+                                slideData.imageUrl = `/uploads/images/${imageFilename}`;
+                                console.log(`✅ Image saved and URL set for frontend: ${slideData.imageUrl}`);
+                            } catch (saveError) {
+                                console.error('Error saving presentation image:', saveError);
+                            }
+                        } else {
+                            console.log(`⚠️ Image generation failed, skipping image for this slide.`);
+                        }
+                    }
+                }
+            }
+
+            // Save the presentation
+            const uploadsDir = path.join(__dirname, '../../uploads/presentations');
+            await fs.promises.mkdir(uploadsDir, { recursive: true });
+
+            const filename = `presentation-${timestamp}.pptx`;
+            const filepath = path.join(uploadsDir, filename);
+
+            await ppt.writeFile({ fileName: filepath });
+
+            const baseUrl = process.env.BASE_URL || `http://localhost:${process.env.PORT || 5000}`;
+            const downloadUrl = `${baseUrl}/uploads/presentations/${filename}`;
+
+            console.log('✅ PPT generated successfully:', filename);
+
+            return {
+                filename,
+                downloadUrl,
+                structure: pptStructure,
+                slideCount: pptStructure.slides.length
+            };
+
+        } catch (error) {
+            console.error('❌ Error generating PPT:', error);
+            throw error;
+        }
+    }
+
     async generateChartWithCodeInterpreter(messages, fileId) {
         const client = this.getClient("OpenAI");
 
         // Combine messages into a single string prompt for the 'input' field
         const prompt = messages.map(m => `${m.role}: ${m.content}`).join('\\n\\n');
         let instructions = `
-        You are a data visualization expert. Based on the conversation history, when asked to create a chart or graph,
-        write and run Python code to generate the visualization.
-        You must save the output as an image file and provide a reference to it.
-        You are a professional developer; I will give you a scenario, you understand that and create a chart accordingly. Whenever a chart or graph is discussed, you write and run code using the python tool to answer the question.
-        `;
+You are a data visualization expert. Based on the conversation history, when asked to create a chart or graph,
+write and run Python code to generate the visualization.
+You must save the output as an image file and provide a reference to it.
+You are a professional developer; I will give you a scenario, you understand that and create a chart accordingly. Whenever a chart or graph is discussed, you write and run code using the python tool to answer the question.
+`;
+
         let containerId = null;
         let tempContainer = null;
 
