@@ -491,7 +491,7 @@ You have a MathJax render environment.
 - Use $(tex_formula)$ in-line delimiters to display equations instead of backslash;
 - The render environment only uses $ (single dollarsign) as a container delimiter, never output $$.
 Example: $x^2 + 3x$ is output for "x² + 3x" to appear as TeX. You don't need to define who you are act like a simple just example some
-say hello so give the answer hello how can i help you`
+say hello so give the answer hello how can i help you and the answer should be respective there native lanuage not which language they give prompt you`
         };
       }
 
