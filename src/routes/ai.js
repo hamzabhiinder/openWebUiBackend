@@ -7,6 +7,7 @@ const OpenAI = require('openai');
 const usageService = require("../services/usage-service");
 const { optionalAuth } = require('../middleware/optionalAuth');
 const { trackAnonUsage } = require('../middleware/trackAnonUsage');
+const googleMCPService = require('../services/google-mcp');
 const router = express.Router();
 const cookie = require('cookie');
 const crypto = require('crypto');
@@ -2006,9 +2007,26 @@ Respond naturally and helpfully. If you need to perform Gmail actions, I will ha
 
       try {
         // AI-powered action classification for better intent detection
-        const actionClassificationPrompt = `Your task is to analyze the user's request, which can be in ANY language, and classify their intent into a specific Gmail action. Rely on your multilingual understanding to determine the user's goal.
-
+        const actionClassificationPrompt = `Your task is to analyze  the user's real intent** (not just keywords) behind their request.,The input can be in **ANY language**. You must rely on your **multilingual, contextual, and semantic understanding** to identify what the user truly wants, even if they don’t use explicit Gmail-related words
 User Request: "${prompt}"
+
+
+### 🎯 GOAL:
+Classify the user's intent into one clear Gmail-related action.  
+Base your decision on **meaning**, **context**, and **implied behavior** — not only literal keywords.
+
+---
+
+### 🧠 EXAMPLES OF INTENT UNDERSTANDING
+- “show my last mail” → likely means **the last email I sent**, so folder = **SENT**, action = **READ**.  
+- “who did I message yesterday” → implies **SENT** folder (user wants sent messages).  
+- “what new emails came today” → **INBOX** + **unread_only = true**.  
+- “mujhe kal bheje gaye emails dikhao” → means “show emails sent yesterday” → folder = SENT.  
+- “enviar correo a Maria” → **SEND** action.  
+- “summarize my last 10 messages” → **ANALYZE** action.  
+- “search all messages about invoice” → **SEARCH** action.
+
+---
 
 Classify the user's primary goal into one of these categories based on their intent:
 1.  **READ**: The user wants to view, check, or get information from their emails.
@@ -2017,32 +2035,43 @@ Classify the user's primary goal into one of these categories based on their int
     (e.g., "send an email to bob@example.com", "write a message to Jane", "hamza ko email bhejo", "mujay hamzabhinder5@gmail.com ko message likhna hai")
 3.  **DRAFT**: The user wants to create an email but not send it immediately.
     (e.g., "draft an email to my boss", "prepare a message")
-4.  **DELETE**: The user wants to remove emails.
-    (e.g., "delete old newsletters", "remove emails from spam")
+4.  **ANALYZE**: The user wants a report, summary, or analysis of their emails. This is different from just reading.
+    (e.g., "give me a report of my email history", "summarize my emails from this week", "reportes de mis histórico de correos")
 5.  **SEARCH**: The user wants to find specific emails based on criteria.
     (e.g., "find emails about the project", "search for messages from last week")
 6.  **NONE**: The request is not related to any of the above Gmail actions.
 
 Also extract the following details from the request:
--   **number**: How many emails? (e.g., for "last 5 emails", extract 5).
+-   **number**: How many emails? IMPORTANT rules:
+    *   If the user asks for "last email", "latest email", "my last email", "last mail" (singular) -> extract 1
+    *   If the user asks for "last 5 emails", "latest 10 emails" (with number) -> extract that number
+    *   If the user asks for "emails" (plural) without a number -> extract 10 as default
+    *   Keywords indicating singular: "last", "latest", "recent" + singular noun
 -   **email_addresses**: Any email addresses mentioned.
 -   **keywords**: Any specific search terms.
--   **folder**: Determine the target folder.
-    *   If the user mentions "sent", "outbox", or "emails I sent" -> "SENT".
-    *   For generic requests like "latest emails", "last mail", "check my mail" -> **ALWAYS default to "INBOX"**.
-    *   If in doubt, ALWAYS choose "INBOX".
+-   **folder**: Determine the target folder with these rules:
+    *   If asking about emails THEY SENT (verbs: "sent", "send kia", "bheje", "enviado", "I sent", "maine bheje", "manay send kia") -> "SENT"
+    *   If asking about emails THEY RECEIVED (verbs: "received", "got", "mile", "recibido") -> "INBOX"
+    *   For generic requests like "latest emails", "last mail", "check my mail", "new emails", "mujhe emails dikhao" -> **ALWAYS default to "INBOX"**
+    *   If in doubt, ALWAYS choose "INBOX"
 -   **unread_only**: Set to \`true\` if the user ONLY wants unread emails.
 -   **read_only**: Set to \`true\` if the user ONLY wants emails they have already read.
+-   **start_date**: If the user specifies a start date, a specific day, or a range (e.g., "today", "yesterday", "on the 15th", "last 20 days"), extract the start date in YYYY-MM-DD format. Current date is ${new Date().toISOString().split('T')[0]}.
+-   **end_date**: If the user specifies an end date or a range, extract the end date in YYYY-MM-DD format. For a single day request, end_date can be null.
+-   **table_summary**: Set to \`true\` if the user explicitly asks for a table.
 
 Respond ONLY with a valid JSON object in the following format:
 {
-  "action": "READ|SEND|DRAFT|DELETE|SEARCH|NONE",
+  "action": "READ|SEND|DRAFT|ANALYZE|SEARCH|NONE",
   "folder": "INBOX|SENT",
   "number": null | <number>,
   "email_addresses": [],
   "keywords": [],
   "unread_only": false,
   "read_only": false,
+  "start_date": null | "YYYY-MM-DD",
+  "end_date": null | "YYYY-MM-DD",
+  "table_summary": false,
   "confidence": 0.0-1.0
 }`;
 
@@ -2073,40 +2102,50 @@ Respond ONLY with a valid JSON object in the following format:
         }
 
         // Perform actions based on AI classification
-        if (actionAnalysis.action === 'READ') {
-          // Extract number of emails to fetch from AI analysis
-          const maxResults = actionAnalysis.number || 5;
-
-          // Use AI analysis for read/unread preference
+        if (actionAnalysis.action === 'READ' || actionAnalysis.action === 'SEARCH') {
+          const maxResults = actionAnalysis.number || 10;
           const unreadOnly = actionAnalysis.unread_only || false;
           const readOnly = actionAnalysis.read_only || false;
+          const folder = actionAnalysis.folder || 'INBOX';
 
-          // ✅ Use AI-detected folder (INBOX or SENT)
-          const folder = actionAnalysis.folder || 'INBOX'; // Default to INBOX
-
-          // Build query based on folder
-          let folderQuery = '';
-          if (folder === 'SENT') {
-            folderQuery = 'in:sent';
-          } else {
-            folderQuery = 'in:inbox';
+          // Build a more sophisticated search query
+          let queryParts = [`in:${folder.toLowerCase()}`];
+          if (actionAnalysis.keywords && actionAnalysis.keywords.length > 0) {
+            queryParts.push(actionAnalysis.keywords.join(' '));
+          }
+          if (actionAnalysis.email_addresses && actionAnalysis.email_addresses.length > 0) {
+            queryParts.push(`from:(${actionAnalysis.email_addresses.join(' OR ')})`);
+          }
+          if (actionAnalysis.start_date) {
+            queryParts.push(`after:${actionAnalysis.start_date}`);
+          }
+          if (actionAnalysis.end_date) {
+            queryParts.push(`before:${actionAnalysis.end_date}`);
+          } else if (actionAnalysis.start_date) {
+            // If only a start date is provided, limit the search to that day
+            const startDate = new Date(actionAnalysis.start_date);
+            startDate.setDate(startDate.getDate() + 1);
+            const beforeDate = startDate.toISOString().split('T')[0];
+            queryParts.push(`before:${beforeDate}`);
           }
 
-          console.log('Email Filter from AI:', { folder, folderQuery, unreadOnly, readOnly, maxResults, prompt });
 
-          // Fetch emails with proper filtering including folder
-          const emails = await gmailService.getEmails({
-            query: folderQuery, // ✅ Pass folder query
-            maxResults: Math.min(maxResults, 25), // Limit to 25 for performance
+          const finalQuery = queryParts.join(' ');
+          console.log('Constructed Gmail Search Query:', finalQuery);
+
+          const emails = await gmailService.searchEmails({
+            query: finalQuery,
+            maxResults: Math.min(maxResults, 50), // Limit to 50 for performance
             unreadOnly,
             readOnly
           });
 
           gmailResult = {
-            action: 'read',
+            action: actionAnalysis.action,
+            query: finalQuery,
             emails: emails,
             count: emails.length,
-            folder, // Include folder in result
+            folder,
             unreadOnly,
             readOnly
           };
@@ -2236,31 +2275,82 @@ Rules:
             message: 'Delete functionality is currently disabled. You can search emails or mark them as read instead.'
           };
         } else if (actionAnalysis.action === 'SEARCH') {
-          // Handle search requests using AI-extracted keywords
-          const keywords = actionAnalysis.keywords.length > 0 ? actionAnalysis.keywords : [];
-          const emailAddresses = actionAnalysis.email_addresses || [];
+        } else if (actionAnalysis.action === 'ANALYZE') {
+          console.log('🔬 Handling ANALYZE action');
 
-          let searchQuery = '';
-          if (emailAddresses.length > 0) {
-            searchQuery = `from:${emailAddresses[0]}`;
-          } else if (keywords.length > 0) {
-            searchQuery = keywords.join(' OR ');
-          } else {
-            searchQuery = prompt.replace(/search|find|emails?|for|in|gmail/gi, '').trim();
+          // 1. Perform a targeted search first to get relevant emails
+          const maxResults = actionAnalysis.number || 50; // Analyze up to 50 relevant emails
+          const folder = actionAnalysis.folder || 'INBOX';
+
+          let queryParts = [`in:${folder.toLowerCase()}`];
+          if (actionAnalysis.keywords && actionAnalysis.keywords.length > 0) {
+            queryParts.push(actionAnalysis.keywords.join(' '));
+          }
+          if (actionAnalysis.email_addresses && actionAnalysis.email_addresses.length > 0) {
+            queryParts.push(`from:(${actionAnalysis.email_addresses.join(' OR ')})`);
+          }
+          if (actionAnalysis.start_date) {
+            queryParts.push(`after:${actionAnalysis.start_date}`);
+          }
+          if (actionAnalysis.end_date) {
+            queryParts.push(`before:${actionAnalysis.end_date}`);
+          } else if (actionAnalysis.start_date) {
+            const startDate = new Date(actionAnalysis.start_date);
+            startDate.setDate(startDate.getDate() + 1);
+            const beforeDate = startDate.toISOString().split('T')[0];
+            queryParts.push(`before:${beforeDate}`);
           }
 
-          const maxResults = actionAnalysis.number || 10;
-          const emails = await gmailService.searchEmails({
+          const searchQuery = queryParts.join(' ');
+          console.log('Constructed Gmail Search Query for Analysis:', searchQuery);
+
+          const emailsForAnalysis = await gmailService.searchEmails({
             query: searchQuery,
-            maxResults: Math.min(maxResults, 25)
+            maxResults: Math.min(maxResults, 100) // Hard limit of 100 for analysis performance
           });
 
-          gmailResult = {
-            action: 'search',
-            query: searchQuery,
-            emails: emails,
-            count: emails.length
-          };
+          if (emailsForAnalysis.length === 0) {
+            gmailResult = {
+              action: 'analyze',
+              summary: 'Could not find any emails matching your criteria to analyze.',
+              emails: []
+            };
+          } else {
+            // 2. Prepare the content for the analysis prompt
+            const emailContentForAI = emailsForAnalysis.map(email => {
+              return `From: ${email.from}\nSubject: ${email.subject}\nDate: ${email.date}\nContent: ${email.body || email.snippet}\n---\n`;
+            }).join('\n');
+
+            // 3. Create a new prompt for the AI to generate the report
+            const analysisSystemPrompt = `You are an expert data analyst specializing in email history. Your task is to generate a concise report based on the provided email data and the user's request. The user's request might be in any language, so use your multilingual capabilities to understand it.
+
+User's Request: "${prompt}"
+
+Based on this request and the following email data, create a summary or report. The report should be well-structured, easy to read, and directly address the user's query.
+- If the user asks for a table, you MUST format the output as a markdown table.
+- Use markdown for all formatting (e.g., headings, lists, bold text).
+- Be precise and extract specific data points if requested (e.g., bank expenses, dates, amounts).`;
+
+            const analysisUserPrompt = `Here is the email data matching the user's query:\n\n${emailContentForAI}\n\nPlease generate the report based on my original request: "${prompt}"`;
+
+            // 4. Call the AI service to get the summary
+            const analysisResponse = await openai.chat.completions.create({
+              model: 'gpt-4o', // Use a more powerful model for complex analysis
+              messages: [
+                { role: 'system', content: analysisSystemPrompt },
+                { role: 'user', content: analysisUserPrompt }
+              ],
+              temperature: 0.3,
+            });
+
+            const reportContent = analysisResponse.choices[0].message.content;
+
+            gmailResult = {
+              action: 'analyze',
+              summary: reportContent,
+              emails: emailsForAnalysis
+            };
+          }
         } else if (lowerPrompt.includes('search') || lowerPrompt.includes('find')) {
           // Extract search query
           const searchQuery = prompt.replace(/search|find|emails?|for|in|gmail/gi, '').trim();
@@ -2325,8 +2415,9 @@ Rules:
       let finalResponse = '';
 
       if (gmailResult) {
-        switch (gmailResult.action) {
+        switch (gmailResult.action.toLowerCase()) {
           case 'read':
+          case 'search':
             const emailType = gmailResult.unreadOnly ? 'Unread' : (gmailResult.readOnly ? 'Read' : 'Latest');
             finalResponse = `📧 **${emailType} Emails (${gmailResult.count})**\n\n`;
 
@@ -2388,33 +2479,10 @@ Rules:
             }
             break;
 
-          case 'search':
-            finalResponse = `🔍 **Search Results for "${gmailResult.query}":**\n\n`;
-            if (gmailResult.count > 0) {
-              finalResponse += `Found ${gmailResult.count} matching emails:\n\n`;
-              gmailResult.emails.forEach((email, i) => {
-                finalResponse += `\n---\n\n`;
-                finalResponse += `**🔍 ${i + 1}. ${email.subject}**\n\n`;
-                finalResponse += `**From:** ${email.from}\n`;
-                finalResponse += `**Date:** ${new Date(email.date).toLocaleDateString()}\n`;
 
-                // Show clean preview
-                let preview = '';
-                if (email.body && email.body.trim()) {
-                  preview = email.body.length > 150
-                    ? email.body.substring(0, 150) + '...'
-                    : email.body;
-                } else if (email.snippet) {
-                  preview = email.snippet;
-                }
-
-                if (preview && preview.trim()) {
-                  finalResponse += `**Content:** ${preview.replace(/\n/g, ' ')}\n\n`;
-                }
-              });
-            } else {
-              finalResponse += 'No emails found matching your search criteria.';
-            }
+          case 'analyze':
+            finalResponse = `📊 **Email History Report**\n\n`;
+            finalResponse += `${gmailResult.summary}`;
             break;
 
           case 'delete_disabled':
@@ -2475,20 +2543,22 @@ Rules:
         let assistantMetadata = null; // ✅ Initialize metadata
 
         if (gmailResult) {
-          // Handle different gmail result actions
-          if (gmailResult.action === 'read') {
+          // Handle different gmail result actions (case-insensitive)
+          const action = gmailResult.action.toLowerCase();
+
+          if (action === 'read' || action === 'search') {
             assistantFiles = JSON.stringify([{
-              type: 'gmail_emails',
-              emails: gmailResult.emails,
-              filters: { unreadOnly: gmailResult.unreadOnly, readOnly: gmailResult.readOnly },
-              count: gmailResult.count
-            }]);
-          } else if (gmailResult.action === 'search') {
-            assistantFiles = JSON.stringify([{
-              type: 'gmail_search_results',
+              type: action === 'search' ? 'gmail_search_results' : 'gmail_emails',
               query: gmailResult.query,
               emails: gmailResult.emails,
-              count: gmailResult.count
+              count: gmailResult.count,
+              filters: gmailResult.filters || { unreadOnly: gmailResult.unreadOnly, readOnly: gmailResult.readOnly }
+            }]);
+          } else if (action === 'analyze') {
+            assistantFiles = JSON.stringify([{
+              type: 'gmail_analysis',
+              summary: gmailResult.summary,
+              sourceEmailCount: gmailResult.emails.length
             }]);
           } else if (gmailResult.action === 'reconnect_required') {
             // ✅ Add metadata to show the connection card on the frontend
@@ -2831,6 +2901,213 @@ Every element should feel intentionally designed, polished, and premium. The use
       if (!res.writableEnded) {
         res.end();
       }
+    }
+  }
+);
+
+// ✅ Generate Google Calendar & Drive AI Response - Using OpenAI MCP
+router.post(
+  '/generate-google-services',
+  [
+    body('prompt').trim().notEmpty().withMessage('Prompt is required'),
+    body('chatId').optional().isString(),
+    body('model').trim().notEmpty().withMessage('Model is required'),
+    body('service').optional().isIn(['calendar', 'drive', 'both']).withMessage('Service must be calendar, drive, or both'),
+  ],
+  authenticateToken,
+  async (req, res) => {
+    try {
+      const errors = validationResult(req);
+      if (!errors.isEmpty()) {
+        return res.status(400).json({ errors: errors.array() });
+      }
+
+      const { prompt, chatId, model, timeZone } = req.body;
+      let { service } = req.body;
+      const userId = req.user.id;
+
+      console.log('📅🗂️ Google Services AI request:', { prompt, chatId, model, service, userId });
+
+      // Check monthly limit
+      if (req.user.plan === 'FREE') {
+        const result = await prisma.user.updateMany({
+          where: {
+            id: userId,
+            monthlyCallLimit: { gt: 0 }
+          },
+          data: {
+            monthlyCallLimit: { decrement: 1 }
+          }
+        });
+
+        if (!result || result.count === 0) {
+          return res.status(429).json({
+            error: 'Free monthly queries exhausted. Please upgrade to continue.',
+            remaining: 0
+          });
+        }
+      } else {
+        if (req.user.apiUsage >= req.user.monthlyLimit) {
+          return res.status(429).json({
+            error: 'Monthly API limit exceeded',
+            usage: { current: req.user.apiUsage, limit: req.user.monthlyLimit },
+          });
+        }
+      }
+
+      // Check if Google Services is connected
+      const user = await prisma.user.findUnique({
+        where: { id: userId },
+        select: { googleServicesTokens: true }
+      });
+
+      if (!user?.googleServicesTokens) {
+        // Save user message even if not connected
+        if (chatId) {
+          await prisma.message.create({
+            data: {
+              chatId,
+              role: 'USER',
+              content: prompt,
+            }
+          });
+
+          // Save connection required message
+          await prisma.message.create({
+            data: {
+              chatId,
+              role: 'ASSISTANT',
+              content: `📅🗂️ **Google Services Connection Required**
+
+I can help you with Google Calendar and Google Drive tasks like:
+
+**Google Calendar:**
+- View your upcoming events
+- Create new meetings and appointments
+- Search your calendar
+- Manage event details
+
+**Google Drive:**
+- List your files and folders
+- Search for documents
+- Get file details
+- Manage your documents
+
+But first, you need to connect your Google Calendar & Drive account securely using the button below.`,
+              metadata: JSON.stringify({
+                type: 'google_services_connection_required',
+                showConnectionCard: true
+              })
+            }
+          });
+        }
+
+        return res.json({
+          success: true,
+          requiresConnection: true,
+          message: 'Google Services connection required'
+        });
+      }
+
+
+      const chatHistory = await prisma.message.findMany({
+        where: { chatId: chatId, chat: { userId: userId } }, // Security check
+        orderBy: { timestamp: 'asc' },
+        select: { role: true, content: true }
+      });
+      chatHistory.push({ role: 'USER', content: prompt });
+      // Process request using OpenAI MCP
+      const mcpResult = await googleMCPService.processRequest(
+        chatHistory,
+        JSON.parse(user.googleServicesTokens),
+        timeZone || 'UTC',
+        chatId
+      );
+
+      let finalResponse = mcpResult.content;
+
+      // ✅ Fallback for when the model fails to generate a response
+      if (!finalResponse || finalResponse.trim() === "") {
+        finalResponse = "I'm sorry, I encountered an issue while trying to access your Google services. Please try again later.";
+      }
+
+      // Save messages to chat
+      if (chatId) {
+        const chat = await prisma.chat.findFirst({ where: { id: chatId, userId } });
+        if (!chat) {
+          return res.status(404).json({ error: 'Chat not found' });
+        }
+
+        await prisma.message.create({
+          data: {
+            chatId,
+            role: 'USER',
+            content: prompt,
+          }
+        });
+
+        // Build UI-friendly metadata for frontend rendering
+        let assistantMetadata = JSON.stringify({
+          type: 'google_services_response',
+          service: service,
+          timestamp: new Date().toISOString()
+        });
+
+        await prisma.message.create({
+          data: {
+            chatId,
+            role: 'ASSISTANT',
+            content: finalResponse,
+            tokens: finalResponse.length,
+            metadata: assistantMetadata
+          }
+        });
+
+        // Update chat title
+        await prisma.chat.update({
+          where: { id: chatId },
+          data: {
+            updatedAt: new Date(),
+            title: chat.title === 'New Chat'
+              ? `📅 ${service === 'calendar' ? 'Calendar' : service === 'drive' ? 'Drive' : 'Google'}: ${prompt.substring(0, 30)}${prompt.length > 30 ? '...' : ''}`
+              : chat.title
+          }
+        });
+      }
+
+      // Track usage
+      const tokens = finalResponse.length;
+      await usageService.recordUsage(userId, model, tokens, tokens * 0.001);
+
+      res.json({
+        success: true,
+        content: finalResponse,
+
+        tokens
+      });
+
+    } catch (error) {
+      console.error('Google Services AI generation error:', error);
+
+      // Handle re-authentication errors
+      const isAuthError = error.message?.includes('reconnect your account') ||
+        error.message?.includes('connection has expired');
+
+      if (isAuthError) {
+        // Clear invalid tokens
+        await prisma.user.update({
+          where: { id: req.user.id },
+          data: { googleServicesTokens: null }
+        });
+
+        return res.json({
+          success: true,
+          requiresConnection: true,
+          message: error.message
+        });
+      }
+
+      res.status(500).json({ error: error.message || 'Google Services AI generation failed' });
     }
   }
 );
