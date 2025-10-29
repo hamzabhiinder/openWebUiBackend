@@ -1764,9 +1764,9 @@ router.post("/createVisualizeChart", async (req, res) => {
 });
 
 
-// ✅ Generate PowerPoint Presentation
+// ✅ Generate PowerPoint Presentation Content (Text Preview with Streaming)
 router.post(
-  '/generate-ppt',
+  '/generate-ppt-content',
   [
     body('prompt').trim().notEmpty().withMessage('Prompt is required'),
     body('chatId').isString().withMessage('chatId is required'),
@@ -1784,7 +1784,7 @@ router.post(
       const { prompt, chatId, provider = 'OpenAI', model = 'gpt-4o' } = req.body;
       const userId = req.user.id;
 
-      console.log('📊 PPT generation request:', { prompt, chatId, provider, model });
+      console.log('📊 PPT content streaming request:', { prompt, chatId, provider, model });
 
       // Check monthly limit
       if (req.user.plan === 'FREE') {
@@ -1818,7 +1818,145 @@ router.post(
         return res.status(404).json({ error: 'Chat not found or access denied.' });
       }
 
-      // Save user message
+      // Set up streaming headers
+      res.setHeader('Content-Type', 'text/event-stream');
+      res.setHeader('Cache-Control', 'no-cache');
+      res.setHeader('Connection', 'keep-alive');
+      res.setHeader('X-Accel-Buffering', 'no');
+      res.flushHeaders();
+
+      // Generate content with streaming
+      const client = aiService.getClient(provider);
+
+      const systemMessage = {
+        role: 'system',
+        content: `You are an expert multilingual presentation creator. You can understand and respond in ANY language (English, German, Spanish, French, Urdu, Arabic, Chinese, Japanese, etc.).
+
+**IMPORTANT LANGUAGE RULES:**
+- Automatically detect the user's language from their request
+- Respond in the SAME language as the user's request
+- If user asks in German, respond completely in German
+- If user asks in Spanish, respond completely in Spanish  
+- If user asks in Urdu, respond completely in Urdu
+- Generate slide content in the requested language
+- Keep all instructions and format in the detected language
+
+Generate detailed presentation content in a clear, well-formatted text response.
+
+Format your response like this:
+
+# [Presentation Title]
+
+**Total Slides:** [number]
+
+---
+
+## Slide 1: [Title]
+**Type:** Title Slide
+**Subtitle:** [subtitle text]
+
+## Slide 2: [Title]
+**Type:** Content
+**Points:**
+• [Point 1]
+• [Point 2]
+• [Point 3]
+• [Point 4]
+
+## Slide 3: [Title]
+**Type:** Two-Column
+**Left Column:**
+• [Point 1]
+• [Point 2]
+
+**Right Column:**
+• [Point 1]
+• [Point 2]
+
+## Slide 4: [Title]
+**Type:** Content with Image
+**Points:**
+• [Point 1]
+• [Point 2]
+**Image:** [Description of image to generate]
+
+---
+
+Generate 5-10 slides with detailed, professional content. Each content slide should have at least 4-6 meaningful bullet points.
+
+**IMPORTANT - Final Instructions to User:**
+After presenting the content, provide instructions in the SAME language as the presentation content:
+- If German presentation: "Sie können jetzt Änderungen vornehmen oder 'Generiere die PPT' sagen, um die Datei zu erstellen."
+- If Spanish presentation: "Puede hacer cambios o decir 'genera el PPT' para crear el archivo."
+- If French presentation: "Vous pouvez demander des modifications ou dire 'génère le PPT' pour créer le fichier."
+- If Urdu presentation: "آپ تبدیلیاں کر سکتے ہیں یا 'PPT بناؤ' کہہ کر فائل بنا سکتے ہیں۔"
+- If Roman Urdu presentation: "Aap changes kar sakte hain ya 'PPT banao' keh kar file bana sakte hain."
+- If English presentation: "You can ask for changes or say 'generate the PPT' to create the actual file."
+- Match the language of your presentation content for the instructions.`
+      };
+
+      // Fetch chat history to provide context for edits
+      const history = await prisma.message.findMany({
+        where: { chatId },
+        orderBy: { timestamp: 'asc' },
+        select: { role: true, content: true }
+      });
+
+      const messages = [systemMessage];
+
+      // Add history to messages
+      history.forEach(msg => {
+        messages.push({
+          role: msg.role.toLowerCase(),
+          content: msg.content
+        });
+      });
+
+      // Add the current user prompt
+      messages.push({
+        role: 'user',
+        content: prompt
+      });
+
+      let fullContent = '';
+
+      // Stream the response
+      const stream = await client.chat.completions.create({
+        model: model,
+        messages: messages,
+        stream: true
+      });
+
+      for await (const chunk of stream) {
+        const content = chunk.choices[0]?.delta?.content || '';
+        if (content) {
+          fullContent += content;
+          res.write(`data: ${JSON.stringify({ content })}\n\n`);
+        }
+      }
+
+      // Parse structure from full content
+      let pptStructure = null;
+      try {
+        const slideMatches = fullContent.matchAll(/## Slide \d+: (.+?)\n/g);
+        const slides = [];
+
+        for (const match of slideMatches) {
+          slides.push({ title: match[1] });
+        }
+
+        if (slides.length > 0) {
+          const titleMatch = fullContent.match(/# (.+?)\n/);
+          pptStructure = {
+            title: titleMatch ? titleMatch[1] : 'Presentation',
+            slides: slides
+          };
+        }
+      } catch (e) {
+        console.log('Could not parse structure');
+      }
+
+      // Save user message first
       await prisma.message.create({
         data: {
           chatId,
@@ -1827,37 +1965,29 @@ router.post(
         }
       });
 
-      // Generate PPT using AI service
-      const pptResult = await aiService.generatePPT(prompt, provider, model);
-
-      // Save assistant message with PPT data
+      // Save assistant's streaming response to database
       const assistantMessage = await prisma.message.create({
         data: {
           chatId,
           role: 'ASSISTANT',
-          content: `Generated presentation: "${pptResult.structure.title}" with ${pptResult.slideCount} slides`,
-          tokens: 1000,
-          files: JSON.stringify([{
-            type: 'presentation',
-            filename: pptResult.filename,
-            downloadUrl: pptResult.downloadUrl,
-            slideCount: pptResult.slideCount,
-            title: pptResult.structure.title,
-            structure: pptResult.structure
-          }])
+          content: fullContent,
+          tokens: 1000, // Note: This is an approximation
+          metadata: JSON.stringify({
+            type: 'ppt_content_preview',
+            structure: pptStructure,
+            canGenerate: true,
+            prompt: prompt
+          })
         }
       });
 
-      // Update chat title
       const chat = await prisma.chat.findUnique({ where: { id: chatId } });
-      if (chat) {
+      if (chat && chat.title === 'New Chat') {
         await prisma.chat.update({
           where: { id: chatId },
           data: {
             updatedAt: new Date(),
-            title: chat.title === 'New Chat'
-              ? `PPT: ${prompt.slice(0, 30)}${prompt.length > 30 ? '...' : ''}`
-              : chat.title
+            title: `PPT: ${prompt.slice(0, 30)}${prompt.length > 30 ? '...' : ''}`
           }
         });
       }
@@ -1866,20 +1996,156 @@ router.post(
       const tokens = 1000;
       await usageService.recordUsage(userId, model, tokens, tokens * 0.001);
 
-      console.log('✅ PPT generated and saved successfully');
+      console.log('✅ PPT content streaming completed');
+      res.end();
+
+    } catch (error) {
+      console.error('❌ PPT content streaming error:', error);
+      if (!res.headersSent) {
+        res.status(500).json({ error: error.message || 'PPT content generation failed' });
+      } else {
+        res.write(`data: ${JSON.stringify({ error: error.message })}\n\n`);
+        res.end();
+      }
+    }
+  }
+);
+
+// ✅ Generate Actual PowerPoint File (After user confirms)
+router.post(
+  '/generate-ppt-file',
+  [
+    body('prompt').trim().notEmpty().withMessage('Prompt is required'),
+    body('chatId').isString().withMessage('chatId is required'),
+    body('content').optional().isString(),
+    body('provider').optional().isString(),
+    body('model').optional().isString(),
+  ],
+  authenticateToken,
+  async (req, res) => {
+    try {
+      const errors = validationResult(req);
+      if (!errors.isEmpty()) {
+        return res.status(400).json({ errors: errors.array() });
+      }
+
+      const { prompt, chatId, content, provider = 'OpenAI', model = 'gpt-4o' } = req.body;
+      const userId = req.user.id;
+
+      console.log('📊 PPT file generation request:', { chatId, hasContent: !!content });
+
+      const chat = await prisma.chat.findUnique({ where: { id: chatId } });
+      if (!chat || chat.userId !== userId) {
+        return res.status(404).json({ error: 'Chat not found or access denied.' });
+      }
+
+      // Save user's "generate" command message
+      await prisma.message.create({
+        data: {
+          chatId,
+          role: 'USER',
+          content: prompt,
+        }
+      });
+
+      // Generate structured JSON from content or prompt
+      const client = aiService.getClient(provider);
+
+      const systemMessage = {
+        role: 'system',
+        content: `You are an expert presentation creator. Convert the presentation content into a structured JSON format.
+
+The JSON should have this exact format:
+{
+  "title": "Presentation Title",
+  "slides": [
+    {
+      "type": "title",
+      "title": "Main Title",
+      "subtitle": "Subtitle text"
+    },
+    {
+      "type": "content",
+      "title": "Slide Title",
+      "content": ["Point 1", "Point 2", "Point 3", "Point 4"]
+    },
+    {
+      "type": "two-column",
+      "title": "Slide Title",
+      "leftContent": ["Point 1", "Point 2"],
+      "rightContent": ["Point 1", "Point 2"]
+    },
+    {
+      "type": "content-with-image",
+      "title": "Slide Title",
+      "content": ["Point 1", "Point 2"],
+      "imagePrompt": "Description for DALL-E image generation"
+    }
+  ]
+}
+
+Only respond with valid JSON, no additional text.`
+      };
+
+      const userMessage = content
+        ? `Convert this presentation content to JSON format:\n\n${content}`
+        : `Create a presentation about: ${prompt}`;
+
+      const messages = [systemMessage, { role: 'user', content: userMessage }];
+
+      const response = await client.chat.completions.create({
+        model: model,
+        messages: messages
+      });
+
+      const aiResponse = response.choices[0].message.content;
+
+      // Parse JSON
+      let pptStructure;
+      try {
+        const jsonMatch = aiResponse.match(/```(?:json)?\s*([\s\S]*?)\s*```/);
+        const jsonString = jsonMatch ? jsonMatch[1] : aiResponse;
+        pptStructure = JSON.parse(jsonString.trim());
+      } catch (parseError) {
+        console.error('Failed to parse JSON:', parseError);
+        throw new Error('Could not parse presentation structure');
+      }
+
+      // Generate actual PPT file
+      const pptResult = await aiService.generatePPTFromStructure(pptStructure, provider);
+
+      // Save assistant message with file
+      const assistantMessage = await prisma.message.create({
+        data: {
+          chatId,
+          role: 'ASSISTANT',
+          content: `✅ PowerPoint generated: "${pptStructure.title}" with ${pptStructure.slides.length} slides`,
+          tokens: 1000,
+          files: JSON.stringify([{
+            type: 'presentation',
+            filename: pptResult.filename,
+            downloadUrl: pptResult.downloadUrl,
+            slideCount: pptResult.slideCount,
+            title: pptStructure.title,
+            structure: pptStructure
+          }])
+        }
+      });
+
+      console.log('✅ PPT file generated successfully');
 
       res.json({
-        message: 'PPT generated successfully',
+        message: 'PPT file generated successfully',
         filename: pptResult.filename,
         downloadUrl: pptResult.downloadUrl,
         slideCount: pptResult.slideCount,
-        structure: pptResult.structure,
+        structure: pptStructure,
         assistantMessage
       });
 
     } catch (error) {
-      console.error('❌ PPT generation error:', error);
-      res.status(500).json({ error: error.message || 'PPT generation failed' });
+      console.error('❌ PPT file generation error:', error);
+      res.status(500).json({ error: error.message || 'PPT file generation failed' });
     }
   }
 );
