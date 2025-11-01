@@ -12,10 +12,11 @@ const router = express.Router();
 const cookie = require('cookie');
 const crypto = require('crypto');
 const mime = require('mime-types');
-const { Document, Packer, Paragraph, HeadingLevel, TextRun } = require('docx');
+const { Document, Packer, Paragraph, HeadingLevel, TextRun, Table, TableRow, TableCell, WidthType, BorderStyle } = require('docx');
 const PDFDocument = require('pdfkit');
+const htmlDocx = require('html-docx-js');
 
-
+const { exec } = require('child_process');
 // Dependencies ko file ke top par import karen
 const fs = require('fs').promises;
 const fsSync = require('fs'); // ✅ For synchronous file operations
@@ -362,7 +363,15 @@ You have a MathJax render environment.
 Example: $x^2 + 3x$ is output for "x² + 3x" to appear as TeX. You don't need to define who you are act like a simple just example some
 say hello so give the answer hello how can i help you
 
-When a user asks you to create a document, report, or any text file (e.g., .docx, .pdf, .md), you must first generate the content of the document using markdown for structure (e.g., # for Heading 1, ## for Heading 2). Then, you must wrap the entire document content in a special tag. The format is [CREATE_DOCUMENT:filename.ext]...document content...[/CREATE_DOCUMENT]. Replace 'filename.ext' with an appropriate filename for the document, for example 'market_analysis_report.docx' or 'summary.pdf'. The content inside the tags will be saved as a file. The full response, including the tags, will be visible in the chat.`
+When a user explicitly asks to create a document, report, or a file with a specific format (e.g., "create a word document", "make a report about...", "save this as a .pdf"):
+1. If the user has provided content in their message, USE THAT EXACT CONTENT for the document. DO NOT generate new content.
+2. If the user has NOT provided content, then generate appropriate content based on their request.
+3. Use markdown for structure (e.g., # for Heading 1, ## for Heading 2).
+4. Wrap the ENTIRE document content in this special tag: [CREATE_DOCUMENT:filename.ext]...document content...[/CREATE_DOCUMENT]
+5. Replace 'filename.ext' with an appropriate filename (e.g., 'report.docx', 'summary.pdf').
+6. The content inside the tags will be saved as a file.
+
+IMPORTANT: A simple request for a "summary" should NOT create a document unless a file format is specified. If the user says something like "create a Word document from this content" or "make a PDF from this information", you MUST use their provided content exactly as they gave it. DO NOT create new content unless specifically asked to do so.`
         };
       }
 
@@ -572,79 +581,197 @@ When a user asks you to create a document, report, or any text file (e.g., .docx
             const extension = path.extname(safeFilename).toLowerCase();
 
             if (extension === '.docx') {
-              const doc = new Document({
-                sections: [{
-                  children: chatContent.split('\n').map(line => {
-                    line = line.trim();
-                    if (line.startsWith('# ')) return new Paragraph({ text: line.substring(2), heading: HeadingLevel.HEADING_1, spacing: { after: 200 } });
-                    if (line.startsWith('## ')) return new Paragraph({ text: line.substring(3), heading: HeadingLevel.HEADING_2, spacing: { after: 180 } });
-                    if (line.startsWith('### ')) return new Paragraph({ text: line.substring(4), heading: HeadingLevel.HEADING_3, spacing: { after: 160 } });
-                    if (line.startsWith('* ') || line.startsWith('- ')) return new Paragraph({ text: line.substring(2), bullet: { level: 0 } });
+            //   const { marked } = await import('marked');
 
-                    const parts = line.split(/(\*\*.*?\*\*|\*.*?\*)/g).filter(part => part);
-                    const textRuns = parts.map(part => {
-                      if (part.startsWith('**') && part.endsWith('**')) {
-                        return new TextRun({ text: part.slice(2, -2), bold: true });
-                      }
-                      if (part.startsWith('*') && part.endsWith('*')) {
-                        return new TextRun({ text: part.slice(1, -1), italics: true });
-                      }
-                      return new TextRun(part);
-                    });
+            //   // Configure marked with a custom renderer for better table and code block handling
+            //  const tokens = marked.lexer(chatContent);
+            // const docChildren = [];
+            
+            // // Markdown ko DOCX elements mein convert karein
+            // tokens.forEach(token => {
+            //     if (token.type === 'heading') {
+            //         docChildren.push(new Paragraph({
+            //             text: token.text,
+            //             heading: `Heading${token.depth}`,
+            //         }));
+            //     } else if (token.type === 'paragraph') {
+            //         docChildren.push(new Paragraph(token.text));
+            //     } else if (token.type === 'table') {
+            //         const tableRows = [];
+            //         // Header
+            //         tableRows.push(new TableRow({
+            //             children: token.header.map(headerCell => new TableCell({
+            //                 children: [new Paragraph({ text: headerCell.text, bold: true })],
+            //                 width: { size: 4535, type: WidthType.DXA },
+            //             })),
+            //             tableHeader: true,
+            //         }));
+            //         // Body rows
+            //         token.rows.forEach(row => {
+            //             tableRows.push(new TableRow({
+            //                 children: row.map(cell => new TableCell({
+            //                     children: [new Paragraph(cell.text)],
+            //                 })),
+            //             }));
+            //         });
+            //         const table = new Table({
+            //             rows: tableRows,
+            //             width: { size: 100, type: WidthType.PERCENT },
+            //         });
+            //         docChildren.push(table);
+            //     } else {
+            //          docChildren.push(new Paragraph(token.raw));
+            //     }
+            // });
 
-                    return new Paragraph({ children: textRuns, spacing: { after: 100 } });
-                  }),
-                }],
-              });
-              const buffer = await Packer.toBuffer(doc);
-              await fs.writeFile(filePath, buffer);
+            // const doc = new Document({
+            //     sections: [{
+            //         children: docChildren,
+            //     }],
+            // });
+
+            // const buffer = await Packer.toBuffer(doc);
+            // await fs.writeFile(filePath, buffer);
+
+           const tempMarkdownPath = filePath + '.md';
+    await fs.writeFile(tempMarkdownPath, chatContent);
+
+    // 2. Ab Pandoc ko saaf saaf command denge ke is temp file se parho aur .docx file banao.
+    //    Yeh tareeqa sab se zyada reliable hai.
+    const pandocCommand = `pandoc "${tempMarkdownPath}" -f markdown -t docx --mathjax -o "${filePath}"`;
+
+    console.log(`Executing Pandoc command: ${pandocCommand}`);
+
+    // 3. Command ko Promise ke andar chalayein taake async/await kaam kare
+    await new Promise((resolve, reject) => {
+        exec(pandocCommand, (error, stdout, stderr) => {
+            // Kaam poora hone par temporary markdown file ko delete kar dein
+            fs.unlink(tempMarkdownPath, (unlinkErr) => {
+                if (unlinkErr) console.error("Temporary markdown file delete nahi ho saki:", unlinkErr);
+            });
+
+            if (error) {
+                console.error(`Pandoc command execution error: ${error.message}`);
+                console.error(`Pandoc stderr: ${stderr}`);
+                return reject(error);
+            }
+            if (stderr) {
+                console.warn(`Pandoc stderr (warnings): ${stderr}`);
+            }
+            
+            console.log('Pandoc ne file kamyabi se bana di hai.');
+            resolve(stdout);
+        });
+    });
+
             } else if (extension === '.pdf') {
-              await new Promise((resolve, reject) => {
-                const doc = new PDFDocument({ margin: 50 });
-                const stream = fsSync.createWriteStream(filePath);
-                doc.pipe(stream);
+const puppeteer = require('puppeteer');
+            const { marked } = require('marked');
 
-                chatContent.split('\n').forEach(line => {
-                  line = line.trim();
-                  if (line.startsWith('# ')) {
-                    doc.fontSize(24).font('Helvetica-Bold').text(line.substring(2), { paragraphGap: 10 });
-                  } else if (line.startsWith('## ')) {
-                    doc.fontSize(18).font('Helvetica-Bold').text(line.substring(3), { paragraphGap: 8 });
-                  } else if (line.startsWith('### ')) {
-                    doc.fontSize(14).font('Helvetica-Bold').text(line.substring(4), { paragraphGap: 6 });
-                  } else if (line.startsWith('* ') || line.startsWith('- ')) {
-                    doc.fontSize(12).font('Helvetica').text(`• ${line.substring(2)}`, { paragraphGap: 5 });
-                  } else if (line.trim() === '') {
-                    doc.moveDown();
-                  } else {
-                    // Basic support for bold and italic
-                    const parts = line.split(/(\*\*.*?\*\*|\*.*?\*)/g).filter(part => part);
-                    parts.forEach((part, index) => {
-                      let isBold = false;
-                      let isItalic = false;
-                      if (part.startsWith('**') && part.endsWith('**')) {
-                        part = part.slice(2, -2);
-                        isBold = true;
-                      }
-                      if (part.startsWith('*') && part.endsWith('*')) {
-                        part = part.slice(1, -1);
-                        isItalic = true;
-                      }
+          const htmlContent = marked.parse(chatContent);
 
-                      if (isBold && isItalic) doc.font('Helvetica-BoldOblique');
-                      else if (isBold) doc.font('Helvetica-Bold');
-                      else if (isItalic) doc.font('Helvetica-Oblique');
-                      else doc.font('Helvetica');
+            // HTML template jismein MathJax shamil hai
+          const fullHtml = `
+                <html>
+                    <head>
+                        <meta charset="UTF-8">
+                        <title>Generated Document</title>
+                        
+                        <!-- YEH HISSA MASLE KO HAL KAREGA: MathJax ki Configuration -->
+                        <script>
+                            window.MathJax = {
+                                tex: {
+                                    inlineMath: [['$', '$'], ['\\(', '\\)']] // '$...$' ko math samjhe
+                                },
+                                svg: {
+                                    fontCache: 'global'
+                                }
+                            };
+                        </script>
+                        
+                        <!-- MathJax ki library -->
+                        <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
 
-                      doc.fontSize(12).text(part, { continued: true });
-                    });
-                    doc.text('', { continued: false, paragraphGap: 5 });
-                  }
-                });
+                        <!-- Behtar styling ke liye CSS -->
+                        <style>
+                            body { 
+                                font-family: 'Helvetica', 'Arial', sans-serif; 
+                                margin: 40px; 
+                                line-height: 1.6;
+                                font-size: 12pt;
+                            }
+                            table { 
+                                border-collapse: collapse; 
+                                width: 100%; 
+                                margin-bottom: 1em; 
+                            }
+                            th, td { 
+                                border: 1px solid #ddd; 
+                                padding: 8px; 
+                                text-align: left;
+                            }
+                            th { 
+                                background-color: #f2f2f2; 
+                            }
+                            pre, code { 
+                                background-color: #f8f8f8; 
+                                padding: 2px 5px; 
+                                border-radius: 4px;
+                                font-family: 'Courier New', Courier, monospace;
+                            }
+                            pre {
+                                padding: 10px;
+                                display: block;
+                                white-space: pre-wrap;
+                            }
+                            h1, h2, h3 {
+                                border-bottom: 1px solid #eaecef;
+                                padding-bottom: 0.3em;
+                                margin-top: 24px;
+                                margin-bottom: 16px;
+                            }
+                        </style>
+                    </head>
+                    <body>
+                        ${htmlContent}
+                    </body>
+                </html>
+            `;
+            
+            // 3. Puppeteer ko launch karein
+            const browser = await puppeteer.launch({ 
+                headless: "new", // "new" headless mode behtar hai
+                args: ['--no-sandbox', '--disable-setuid-sandbox'] 
+            });
+            const page = await browser.newPage();
+            
+            // 4. HTML content ko page mein load karein
+            await page.setContent(fullHtml, { waitUntil: 'networkidle0' });
 
-                doc.end();
-                stream.on('finish', resolve).on('error', reject);
-              });
+            // 5. SAB SE ZAROORI HISSA: MathJax ke render hone ka intezar karein
+            // Yeh code line page ko roke rakhegi jab tak MathJax tamam formulas ko
+            // aala quality mein convert na kar de.
+            await page.evaluate(async () => {
+                // MathJax ke typeset hone ka promise wait karega
+                await window.MathJax.startup.promise;
+            });
+            
+            // 6. Ab PDF generate karein (jab math sahi ho chuka hai)
+            await page.pdf({
+                path: filePath,
+                format: 'A4',
+                printBackground: true,
+                margin: {
+                    top: '40px',
+                    right: '40px',
+                    bottom: '40px',
+                    left: '40px'
+                }
+            });
+
+            // 7. Browser ko band kar dein
+            await browser.close();
+
             } else {
               await fs.writeFile(filePath, chatContent);
             }
@@ -2149,7 +2276,7 @@ Important Guidelines:
 - Prefer concise lists. When listing emails, also include a machine-readable JSON block at the end using this exact wrapper:
   <EMAILS_JSON>{
    "emails": [
-    {"id":"...","threadId":"...","subject":"...","from":"...","to":"...","date":"ISO-8601","snippet":"...","link":"https://mail.google.com/mail/#all/...","isUnread":BOOLEAN",},
+    {"id":"...","threadId":"...","subject":"...","from":"...","to":"...","date":"ISO-8061","snippet":"...","link":"https://mail.google.com/mail/#all/...","isUnread":BOOLEAN",},
    ],
    "count": NUMBER
   }</EMAILS_JSON>
@@ -2703,7 +2830,7 @@ Every element should feel intentionally designed, polished, and premium. The use
         res.status(500).json({ error: error.message || 'Web development generation failed' });
       } else {
         try {
-          res.write(`data: ${JSON.stringify({ error: error.message || 'Web development generation failed' })}\n\n`);
+          res.write(`data: ${JSON.stringify({ error: error.message || 'AI generation failed' })}\n\n`);
         } catch (writeError) {
           console.error('Failed to write error to stream:', writeError);
         }
