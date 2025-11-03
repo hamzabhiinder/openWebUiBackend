@@ -47,47 +47,17 @@ class AIService {
     isDocumentCreationFromExistingContent(userRequest, messages) {
         const request = userRequest.toLowerCase();
 
-        // Multilingual keywords for analysis or other tasks (NOT document creation)
-        const analysisKeywords = [
-            // English
-            'analyze', 'summarize', 'explain', 'table', 'list', 'comparison', 'chart', 'matrix', 'diagram', 'schema', 'outline',
-            // Spanish
-            'analizar', 'resumir', 'explicar', 'tabla', 'lista', 'comparación', 'gráfico', 'matriz', 'diagrama', 'esquema',
-            // French
-            'analyser', 'résumer', 'expliquer', 'tableau', 'liste', 'comparaison', 'graphique', 'matrice', 'diagramme', 'schéma', 'aperçu',
-            // German
-            'analysieren', 'zusammenfassen', 'erklären', 'tabelle', 'liste', 'vergleich', 'diagramm', 'matrix', 'schema', 'überblick'
-        ];
-
-        // If an analysis keyword is present, it's not a document creation request.
-        if (analysisKeywords.some(keyword => request.includes(keyword))) {
-            return false;
-        }
-
-        // Multilingual keywords for document creation
+        // Keywords that indicate document creation from existing content
         const documentKeywords = [
-            // English
-            'create', 'convert', 'make', 'generate', 'save as', 'export', 'pdf', 'word', 'doc', 'docx', 'document', 'file',
-            // Spanish
-            'crear', 'convertir', 'hacer', 'generar', 'guardar como', 'exportar', 'documento', 'archivo',
-            // French
-            'créer', 'convertir', 'faire', 'générer', 'enregistrer sous', 'exporter', 'document', 'fichier',
-            // German
-            'erstellen', 'umwandeln', 'machen', 'generieren', 'speichern als', 'exportieren', 'dokument', 'datei'
+            'create', 'convert', 'make', 'generate', 'save as', 'export',
+            'pdf', 'word', 'doc', 'docx', 'document', 'file'
         ];
 
-        // Multilingual keywords for referencing previous content
         const referenceKeywords = [
-            // English
-            'above', 'previous', 'earlier', 'that content', 'the content', 'what you gave me', 'what you provided', 'your response', 'from your answer', 'with the information',
-            // Urdu/Hindi
-            'uper wala content', 'jo tumne diya', 'jo content', 'pehle wala',
-            // Spanish
-            'anterior', 'previo', 'ese contenido', 'el contenido', 'lo que me diste', 'tu respuesta', 'con la información',
-            // French
-            'ci-dessus', 'précédent', 'ce contenu', 'le contenu', 'ce que tu m\'as donné', 'ta réponse', 'avec les informations',
-            // German
-            'oben', 'vorherige', 'dieser inhalt', 'der inhalt', 'was du mir gegeben hast', 'deine antwort', 'mit den informationen'
+            'above', 'previous', 'earlier', 'that content', 'the content',
+            'what you gave me', 'what you provided', 'your response',
+            'from your answer', 'with the information', 'uper wala content',
+            'jo tumne diya', 'jo content', 'pehle wala'
         ];
 
         const hasDocumentKeyword = documentKeywords.some(keyword => request.includes(keyword));
@@ -151,19 +121,6 @@ class AIService {
     async generateStream({ provider, model, messages, res, signal, streamId, files }) {
         let fullResponseContent = '';
         try {
-            const lastMessage = messages[messages.length - 1];
-            const userRequest = typeof lastMessage.content === 'string'
-                ? lastMessage.content
-                : lastMessage.content.find(item => item.type === 'text')?.text || '';
-
-            const isDocumentCreation = this.isDocumentCreationFromExistingContent(userRequest, messages);
-
-            if (isDocumentCreation) {
-                console.log('📄 Document creation from existing content detected. Suppressing stream to UI.');
-                const creatingMessage = 'Document is being created...';
-                res.write(`data: ${JSON.stringify({ content: creatingMessage })}\n\n`);
-            }
-
             const client = this.getClient(provider);
             // ✅ IMPROVED: Handle images properly for vision API
             if (files && files.length > 0) {
@@ -211,10 +168,8 @@ class AIService {
                 const contentChunk = chunk.choices[0]?.delta?.content || '';
                 if (contentChunk) {
                     fullResponseContent += contentChunk;
-                    // Client ko data chunk bhejein, unless it's a document creation request
-                    if (!isDocumentCreation) {
-                        res.write(`data: ${JSON.stringify({ content: contentChunk })}\n\n`);
-                    }
+                    // Client ko data chunk bhejein
+                    res.write(`data: ${JSON.stringify({ content: contentChunk })}\n\n`);
                 }
             }
 

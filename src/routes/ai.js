@@ -8,13 +8,11 @@ const usageService = require("../services/usage-service");
 const { optionalAuth } = require('../middleware/optionalAuth');
 const { trackAnonUsage } = require('../middleware/trackAnonUsage');
 const googleMCPService = require('../services/google-mcp');
+const documentService = require('../services/document-service');
 const router = express.Router();
 const cookie = require('cookie');
 const crypto = require('crypto');
 const mime = require('mime-types');
-const { Document, Packer, Paragraph, HeadingLevel, TextRun, Table, TableRow, TableCell, WidthType, BorderStyle } = require('docx');
-const PDFDocument = require('pdfkit');
-const htmlDocx = require('html-docx-js');
 
 const { exec } = require('child_process');
 // Dependencies ko file ke top par import karen
@@ -579,17 +577,83 @@ IMPORTANT: Never regenerate content when the user clearly references previously 
             }
           }
 
+          // ✅ Find and inject chart image when relevant
+          try {
+            // Check if we should include chart based on multiple conditions
+            const promptLower = (prompt || '').toLowerCase();
+            const contentLower = chatContent.toLowerCase();
+
+            // Chart-related keywords
+            const chartKeywords = ['chart', 'graph', 'visualization', 'plot', 'diagram', 'شارٹ', 'گراف'];
+
+            // Content request keywords (when user asks for "all content", "complete content", etc.)
+            // English, Urdu, Spanish, Portuguese
+            const contentRequestKeywords = [
+              // English
+              'all', 'complete', 'entire', 'full', 'everything', 'above', 'whole',
+              // Urdu
+              'saara', 'sara', 'poora', 'tamam', 'uper', 'سارا', 'پورا', 'تمام', 'اوپر',
+              // Spanish
+              'todo', 'todos', 'completo', 'entero', 'arriba', 'superior', 'lleno',
+              // Portuguese  
+              'tudo', 'completo', 'inteiro', 'acima', 'superior', 'cheio'
+            ];
+
+            // Condition 1: User explicitly mentions chart/graph
+            const hasChartKeywords = chartKeywords.some(keyword =>
+              promptLower.includes(keyword) || contentLower.includes(keyword)
+            );
+
+            // Condition 2: User asks for "all content" or "complete content"
+            const asksForAllContent = contentRequestKeywords.some(keyword =>
+              promptLower.includes(keyword)
+            );
+
+            // Condition 3: Check if the AI-generated content references a chart/visualization
+            const contentReferencesChart = /chart|graph|visualization|plot|diagram|شارٹ|گراف/i.test(chatContent);
+
+            // Include chart if ANY of these conditions are true
+            const shouldIncludeChart = hasChartKeywords || (asksForAllContent && contentReferencesChart);
+
+            if (shouldIncludeChart) {
+              const chartMessage = historyMessages
+                .slice()
+                .reverse()
+                .find(msg => {
+                  if (msg.role === 'ASSISTANT' && msg.files) {
+                    try {
+                      const files = JSON.parse(msg.files);
+                      return Array.isArray(files) && files.some(f => f.type === 'chart' && f.imageUrl);
+                    } catch { return false; }
+                  }
+                  return false;
+                });
+
+              if (chartMessage) {
+                const files = JSON.parse(chartMessage.files);
+                const chartFile = files.find(f => f.type === 'chart' && f.imageUrl);
+                if (chartFile && chartFile.imageUrl) {
+                  console.log(`🖼️ Including chart in document (hasChartKeywords: ${hasChartKeywords}, asksForAllContent: ${asksForAllContent}, contentReferencesChart: ${contentReferencesChart})`);
+                  // Prepend the image in Markdown format. Pandoc will handle the conversion.
+                  const chartImageMarkdown = `![Chart Visualization](${chartFile.imageUrl})\n\n`;
+                  chatContent = chartImageMarkdown + chatContent;
+                }
+              }
+            } else {
+              console.log('📄 Chart not relevant for this document. Skipping chart injection.');
+            }
+          } catch (chartError) {
+            console.error("Error processing chart for document:", chartError);
+          }
+
           // Remove any [CREATE_DOCUMENT] tags from the main response to avoid duplication
           finalContent = fullResponseContent.replace(docRegex, '').trim();
 
           console.log(`📄 Creating document: ${filename} (${chatContent.length} chars)`);
 
-          const uploadsDir = path.join(__dirname, '../../uploads/documents', userId);
-          await fs.mkdir(uploadsDir, { recursive: true });
-          const safeFilename = filename.replace(/[^a-zA-Z0-9_.-]/g, '_');
-          const filePath = path.join(uploadsDir, safeFilename);
-
           try {
+            const { filePath, safeFilename } = await documentService.createDocument(userId, filename, chatContent);
+
             const newFileRecord = await prisma.file.create({
               data: {
                 userId: userId,
@@ -613,204 +677,6 @@ IMPORTANT: Never regenerate content when the user clearly references previously 
               downloadUrl: fileUrl,
               path: newFileRecord.path,
             });
-
-            const extension = path.extname(safeFilename).toLowerCase();
-
-            if (extension === '.docx') {
-              //   const { marked } = await import('marked');
-
-              //   // Configure marked with a custom renderer for better table and code block handling
-              //  const tokens = marked.lexer(chatContent);
-              // const docChildren = [];
-
-              // // Markdown ko DOCX elements mein convert karein
-              // tokens.forEach(token => {
-              //     if (token.type === 'heading') {
-              //         docChildren.push(new Paragraph({
-              //             text: token.text,
-              //             heading: `Heading${token.depth}`,
-              //         }));
-              //     } else if (token.type === 'paragraph') {
-              //         docChildren.push(new Paragraph(token.text));
-              //     } else if (token.type === 'table') {
-              //         const tableRows = [];
-              //         // Header
-              //         tableRows.push(new TableRow({
-              //             children: token.header.map(headerCell => new TableCell({
-              //                 children: [new Paragraph({ text: headerCell.text, bold: true })],
-              //                 width: { size: 4535, type: WidthType.DXA },
-              //             })),
-              //             tableHeader: true,
-              //         }));
-              //         // Body rows
-              //         token.rows.forEach(row => {
-              //             tableRows.push(new TableRow({
-              //                 children: row.map(cell => new TableCell({
-              //                     children: [new Paragraph(cell.text)],
-              //                 })),
-              //             }));
-              //         });
-              //         const table = new Table({
-              //             rows: tableRows,
-              //             width: { size: 100, type: WidthType.PERCENT },
-              //         });
-              //         docChildren.push(table);
-              //     } else {
-              //          docChildren.push(new Paragraph(token.raw));
-              //     }
-              // });
-
-              // const doc = new Document({
-              //     sections: [{
-              //         children: docChildren,
-              //     }],
-              // });
-
-              // const buffer = await Packer.toBuffer(doc);
-              // await fs.writeFile(filePath, buffer);
-
-              const tempMarkdownPath = filePath + '.md';
-              await fs.writeFile(tempMarkdownPath, chatContent);
-
-              // 2. Ab Pandoc ko saaf saaf command denge ke is temp file se parho aur .docx file banao.
-              //    Yeh tareeqa sab se zyada reliable hai.
-              const pandocCommand = `pandoc "${tempMarkdownPath}" -f markdown -t docx --mathjax -o "${filePath}"`;
-
-              console.log(`Executing Pandoc command: ${pandocCommand}`);
-
-              // 3. Command ko Promise ke andar chalayein taake async/await kaam kare
-              await new Promise((resolve, reject) => {
-                exec(pandocCommand, (error, stdout, stderr) => {
-                  // Kaam poora hone par temporary markdown file ko delete kar dein
-                  fs.unlink(tempMarkdownPath, (unlinkErr) => {
-                    if (unlinkErr) console.error("Temporary markdown file delete nahi ho saki:", unlinkErr);
-                  });
-
-                  if (error) {
-                    console.error(`Pandoc command execution error: ${error.message}`);
-                    console.error(`Pandoc stderr: ${stderr}`);
-                    return reject(error);
-                  }
-                  if (stderr) {
-                    console.warn(`Pandoc stderr (warnings): ${stderr}`);
-                  }
-
-                  console.log('Pandoc ne file kamyabi se bana di hai.');
-                  resolve(stdout);
-                });
-              });
-
-            } else if (extension === '.pdf') {
-              const puppeteer = require('puppeteer');
-              const { marked } = await import('marked');
-
-
-              const htmlContent = marked.parse(chatContent);
-
-              // HTML template jismein MathJax shamil hai
-              const fullHtml = `
-                <html>
-                    <head>
-                        <meta charset="UTF-8">
-                        <title>Generated Document</title>
-                        
-                        <!-- YEH HISSA MASLE KO HAL KAREGA: MathJax ki Configuration -->
-                        <script>
-                            window.MathJax = {
-                                tex: {
-                                    inlineMath: [['$', '$'], ['\\(', '\\)']] // '$...$' ko math samjhe
-                                },
-                                svg: {
-                                    fontCache: 'global'
-                                }
-                            };
-                        </script>
-                        
-                        <!-- MathJax ki library -->
-                        <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
-
-                        <!-- Behtar styling ke liye CSS -->
-                        <style>
-                            body { 
-                                font-family: 'Helvetica', 'Arial', sans-serif; 
-                                margin: 40px; 
-                                line-height: 1.6;
-                                font-size: 12pt;
-                            }
-                            table { 
-                                border-collapse: collapse; 
-                                width: 100%; 
-                                margin-bottom: 1em; 
-                            }
-                            th, td { 
-                                border: 1px solid #ddd; 
-                                padding: 8px; 
-                                text-align: left;
-                            }
-                            th { 
-                                background-color: #f2f2f2; 
-                            }
-                            pre, code { 
-                                background-color: #f8f8f8; 
-                                padding: 2px 5px; 
-                                border-radius: 4px;
-                                font-family: 'Courier New', Courier, monospace;
-                            }
-                            pre {
-                                padding: 10px;
-                                display: block;
-                                white-space: pre-wrap;
-                            }
-                            h1, h2, h3 {
-                                border-bottom: 1px solid #eaecef;
-                                padding-bottom: 0.3em;
-                                margin-top: 24px;
-                                margin-bottom: 16px;
-                            }
-                        </style>
-                    </head>
-                    <body>
-                        ${htmlContent}
-                    </body>
-                </html>
-            `;
-
-              // 3. Puppeteer ko launch karein
-              const browser = await puppeteer.launch({
-                headless: "new", // "new" headless mode behtar hai
-                args: ['--no-sandbox', '--disable-setuid-sandbox']
-              });
-              const page = await browser.newPage();
-
-              // 4. HTML content ko page mein load karein
-              await page.setContent(fullHtml, { waitUntil: 'networkidle0' });
-
-              // 5. SAB SE ZAROORI HISSA: MathJax ke render hone ka intezar karein
-              // Yeh code line page ko roke rakhegi jab tak MathJax tamam formulas ko
-              // aala quality mein convert na kar de.
-              await page.evaluate(async () => {
-                // MathJax ke typeset hone ka promise wait karega
-                await window.MathJax.startup.promise;
-              });
-
-              // 6. Ab PDF generate karein (jab math sahi ho chuka hai)
-              await page.pdf({
-                path: filePath,
-                format: 'A4',
-                printBackground: true,
-                margin: {
-                  top: '40px',
-                  right: '40px',
-                  bottom: '40px',
-                  left: '40px'
-                }
-              });
-              // 7. Browser ko band kar dein
-              await browser.close();
-
-            } else {
-              await fs.writeFile(filePath, chatContent);
-            }
 
             const finalStats = await fs.stat(filePath);
             await prisma.file.update({
