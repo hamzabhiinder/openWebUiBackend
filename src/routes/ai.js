@@ -570,7 +570,7 @@ IMPORTANT: Default to displaying content in chat. Only create downloadable files
           const { filename, content } = docMatch.groups;
           let chatContent = content.trim();
 
-// If content is minimal/empty, extract from previous conversation
+          // If content is minimal/empty, extract from previous conversation
           if (chatContent.length < 100) {
             console.log('📄 Document content too short, extracting from conversation history...');
 
@@ -591,50 +591,51 @@ IMPORTANT: Default to displaying content in chat. Only create downloadable files
             }
           }
 
-          // ✅ AUTOMATICALLY include ALL charts/visualizations in any document
+          // ✅ AUTOMATICALLY include ALL charts and images in any document
           try {
-            console.log('📊 Checking for charts/visualizations in conversation history...');
-            
-            // Find ALL messages with charts (automatically, no keywords needed)
-            const chartMessages = historyMessages.filter(msg => {
+            console.log('📊 Checking for charts, graphs, and images in conversation history...');
+
+            // Find ALL messages with charts or images
+            const imageMessages = historyMessages.filter(msg => {
               if (msg.role === 'ASSISTANT' && msg.files) {
                 try {
                   const files = JSON.parse(msg.files);
-                  return Array.isArray(files) && files.some(f => f.type === 'chart' && f.imageUrl);
+                  return Array.isArray(files) && files.some(f => (f.type === 'chart' && f.imageUrl) || (f.type === 'image' && f.url));
                 } catch { return false; }
               }
               return false;
             });
 
-            if (chartMessages.length > 0) {
-              console.log(`🖼️ Found ${chartMessages.length} chart(s) - automatically including in document`);
-              
-              // Collect all chart images
-              const chartMarkdowns = [];
-              chartMessages.forEach((msg, index) => {
+            if (imageMessages.length > 0) {
+              console.log(`🖼️ Found ${imageMessages.length} image(s)/chart(s) - automatically including in document`);
+
+              // Collect all image/chart markdowns
+              const imageMarkdowns = [];
+              imageMessages.forEach((msg, index) => {
                 try {
                   const files = JSON.parse(msg.files);
-                  const chartFile = files.find(f => f.type === 'chart' && f.imageUrl);
-                  if (chartFile && chartFile.imageUrl) {
-                    // Add chart with a heading if multiple charts
-                    const chartLabel = chartMessages.length > 1 ? `\n\n## Chart ${index + 1}\n\n` : '\n\n';
-                    chartMarkdowns.push(`${chartLabel}![Chart Visualization](${chartFile.imageUrl})\n\n`);
+                  const imageFile = files.find(f => (f.type === 'chart' && f.imageUrl) || (f.type === 'image' && f.url));
+                  if (imageFile) {
+                    const imageUrl = imageFile.imageUrl || imageFile.url;
+                    const imageType = imageFile.type === 'chart' ? 'Chart' : 'Image';
+                    const imageLabel = imageMessages.length > 1 ? `\n\n## ${imageType} ${index + 1}\n\n` : '\n\n';
+                    imageMarkdowns.push(`${imageLabel}![${imageType} Visualization](${imageUrl})\n\n`);
                   }
                 } catch (e) {
-                  console.error('Error parsing chart file:', e);
+                  console.error('Error parsing image/chart file:', e);
                 }
               });
 
-              // Prepend all charts to content
-              if (chartMarkdowns.length > 0) {
-                chatContent = chartMarkdowns.join('') + chatContent;
-                console.log(`✅ Automatically added ${chartMarkdowns.length} chart(s) to document`);
+              // Prepend all images/charts to content
+              if (imageMarkdowns.length > 0) {
+                chatContent = imageMarkdowns.join('') + chatContent;
+                console.log(`✅ Automatically added ${imageMarkdowns.length} image(s)/chart(s) to document`);
               }
             } else {
-              console.log('📄 No charts found in conversation history');
+              console.log('📄 No charts or images found in conversation history');
             }
-          } catch (chartError) {
-            console.error("Error processing charts for document:", chartError);
+          } catch (imageError) {
+            console.error("Error processing images/charts for document:", imageError);
           }
 
           // Remove any [CREATE_DOCUMENT] tags from the main response to avoid duplication
