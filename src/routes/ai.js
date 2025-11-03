@@ -591,80 +591,47 @@ IMPORTANT: Default to displaying content in chat. Only create downloadable files
             }
           }
 
-          // ✅ Find and inject ALL charts/images when user asks for complete content
+          // ✅ AUTOMATICALLY include ALL charts/visualizations in any document
           try {
-            const promptLower = (prompt || '').toLowerCase();
-            const contentLower = chatContent.toLowerCase();
+            console.log('📊 Checking for charts/visualizations in conversation history...');
+            
+            // Find ALL messages with charts (automatically, no keywords needed)
+            const chartMessages = historyMessages.filter(msg => {
+              if (msg.role === 'ASSISTANT' && msg.files) {
+                try {
+                  const files = JSON.parse(msg.files);
+                  return Array.isArray(files) && files.some(f => f.type === 'chart' && f.imageUrl);
+                } catch { return false; }
+              }
+              return false;
+            });
 
-            // Chart-related keywords
-            const chartKeywords = ['chart', 'graph', 'visualization', 'plot', 'diagram', 'شارٹ', 'گراف', 'table', 'ٹیبل'];
-
-            // Content request keywords (when user asks for "all content", "complete content", etc.)
-            const contentRequestKeywords = [
-              // English
-              'all', 'complete', 'entire', 'full', 'everything', 'above', 'whole', 'transfer', 'information', 'worked',
-              // Urdu  
-              'saara', 'sara', 'poora', 'tamam', 'uper', 'سارا', 'پورا', 'تمام', 'اوپر', 'منتقل',
-              // Spanish
-              'todo', 'todos', 'completo', 'entero', 'arriba', 'superior', 'lleno',
-              // Portuguese
-              'tudo', 'completo', 'inteiro', 'acima', 'superior', 'cheio'
-            ];
-
-            // Condition 1: User explicitly mentions chart/graph/table
-            const hasChartKeywords = chartKeywords.some(keyword =>
-              promptLower.includes(keyword) || contentLower.includes(keyword)
-            );
-
-            // Condition 2: User asks for "all content" or "transfer all information"
-            const asksForAllContent = contentRequestKeywords.some(keyword =>
-              promptLower.includes(keyword)
-            );
-
-            // ✅ When user asks for all content, include ALL charts/graphs from conversation
-            if (hasChartKeywords || asksForAllContent) {
-              console.log('📊 Looking for ALL charts/graphs in conversation history...');
+            if (chartMessages.length > 0) {
+              console.log(`🖼️ Found ${chartMessages.length} chart(s) - automatically including in document`);
               
-              // Find ALL messages with charts (not just the last one)
-              const chartMessages = historyMessages.filter(msg => {
-                if (msg.role === 'ASSISTANT' && msg.files) {
-                  try {
-                    const files = JSON.parse(msg.files);
-                    return Array.isArray(files) && files.some(f => f.type === 'chart' && f.imageUrl);
-                  } catch { return false; }
+              // Collect all chart images
+              const chartMarkdowns = [];
+              chartMessages.forEach((msg, index) => {
+                try {
+                  const files = JSON.parse(msg.files);
+                  const chartFile = files.find(f => f.type === 'chart' && f.imageUrl);
+                  if (chartFile && chartFile.imageUrl) {
+                    // Add chart with a heading if multiple charts
+                    const chartLabel = chartMessages.length > 1 ? `\n\n## Chart ${index + 1}\n\n` : '\n\n';
+                    chartMarkdowns.push(`${chartLabel}![Chart Visualization](${chartFile.imageUrl})\n\n`);
+                  }
+                } catch (e) {
+                  console.error('Error parsing chart file:', e);
                 }
-                return false;
               });
 
-              if (chartMessages.length > 0) {
-                console.log(`🖼️ Found ${chartMessages.length} chart(s) to include in document`);
-                
-                // Collect all chart images
-                const chartMarkdowns = [];
-                chartMessages.forEach((msg, index) => {
-                  try {
-                    const files = JSON.parse(msg.files);
-                    const chartFile = files.find(f => f.type === 'chart' && f.imageUrl);
-                    if (chartFile && chartFile.imageUrl) {
-                      // Add chart with a heading if multiple charts
-                      const chartLabel = chartMessages.length > 1 ? `\n\n## Chart ${index + 1}\n\n` : '\n\n';
-                      chartMarkdowns.push(`${chartLabel}![Chart Visualization](${chartFile.imageUrl})\n\n`);
-                    }
-                  } catch (e) {
-                    console.error('Error parsing chart file:', e);
-                  }
-                });
-
-                // Prepend all charts to content
-                if (chartMarkdowns.length > 0) {
-                  chatContent = chartMarkdowns.join('') + chatContent;
-                  console.log(`✅ Added ${chartMarkdowns.length} chart(s) to document`);
-                }
-              } else {
-                console.log('📄 No charts found in conversation history');
+              // Prepend all charts to content
+              if (chartMarkdowns.length > 0) {
+                chatContent = chartMarkdowns.join('') + chatContent;
+                console.log(`✅ Automatically added ${chartMarkdowns.length} chart(s) to document`);
               }
             } else {
-              console.log('📄 Chart/graph not explicitly requested. Skipping chart injection.');
+              console.log('📄 No charts found in conversation history');
             }
           } catch (chartError) {
             console.error("Error processing charts for document:", chartError);
