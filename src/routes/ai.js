@@ -362,28 +362,38 @@ Example: $x^2 + 3x$ is output for "x² + 3x" to appear as TeX. You don't need to
 say hello so give the answer hello how can i help you
 
 **CRITICAL DOCUMENT CREATION RULES:**
-When a user asks to create a document using previous content (phrases like "with the information you gave me", "using the above data", "with the content I provided", "make a Word document from this", etc.):
+⚠️ ONLY create downloadable documents when the user EXPLICITLY requests a file format (Word, PDF, DOCX, etc.)
 
-1. **DO NOT REPEAT CONTENT**: Never repeat existing conversation content in your main response message
-2. **BRIEF ACKNOWLEDGMENT ONLY**: Give a short response like "I'll create a Document with the content from my previous response"  
-3. **USE [CREATE_DOCUMENT] TAGS**: Put the actual content only inside [CREATE_DOCUMENT:filename.ext]...[/CREATE_DOCUMENT]
-4. **EXTRACT FROM HISTORY**: Use exact content from previous assistant messages in this conversation 
+**When to CREATE A DOCUMENT FILE:**
+- User explicitly says: "make a Word document", "create a PDF", "download as DOCX"
+- User says: "convert to Word/PDF", "export as document", "save as file"
+- User references file formats: ".docx", ".pdf", "Word file", "PDF file"
 
-Document Creation Process:
+**When to DISPLAY IN CHAT (DO NOT create document):**
+- User says: "show me", "create a table", "generate a list", "make a chart"
+- User asks for: "sales projections", "data table", "comparison", "summary"
+- General content requests WITHOUT mentioning file formats
+
+**Document Creation Process (ONLY when file explicitly requested):**
 1. If user references previous content ("the information you gave me", "above data", etc.), extract that content from conversation history
 2. If user provides content in their current message, use that exact content
-3. If user asks for completely new content, then generate it
-4. Use markdown for structure (# for Heading 1, ## for Heading 2).
-5. Wrap the ENTIRE document content in: [CREATE_DOCUMENT:filename.ext]...content...[/CREATE_DOCUMENT]
-6. Replace 'filename.ext' with appropriate filename (e.g., 'report.docx', 'summary.pdf')
+3. Use markdown for structure (# for Heading 1, ## for Heading 2)
+4. Wrap the ENTIRE document content in: [CREATE_DOCUMENT:filename.ext]...content...[/CREATE_DOCUMENT]
+5. Replace 'filename.ext' with appropriate filename (e.g., 'report.docx', 'summary.pdf')
+6. Give brief acknowledgment: "I'll create a Document with the content"
 
+**EXAMPLES:**
+✅ CREATE FILE:
+- "Create a Word document with sales projections" → Generate Word file
+- "Make a PDF from the data above" → Generate PDF file
+- "Download this as a DOCX file" → Generate Word file
 
-EXAMPLES:
-- "Create a Word document with the information you just provided" → Use content from your last assistant message
-- "Make a PDF from the data above" → Use content from previous assistant responses  
-- "Generate a new report about climate change" → Create new content as requested
+❌ DISPLAY IN CHAT:
+- "Create a sales projection table" → Display markdown table in chat
+- "Show me revenue trends" → Display content in chat
+- "Generate a comparison chart" → Display in chat
 
-IMPORTANT: Never regenerate content when the user clearly references previously provided information. Always prioritize using existing conversation content over generating new content.`
+IMPORTANT: Default to displaying content in chat. Only create downloadable files when user explicitly requests a file format.`
         };
       }
 
@@ -564,86 +574,68 @@ IMPORTANT: Never regenerate content when the user clearly references previously 
           if (chatContent.length < 100) {
             console.log('📄 Document content too short, extracting from conversation history...');
 
-            // Get recent assistant messages with substantial content
-            const recentAssistantMessages = messages
-              .filter(msg => msg.role === 'assistant' && msg.content && msg.content.length > 500)
-              .slice(-2); // Last 2 substantial messages
+            // ✅ Get ALL assistant messages (not just last 2) for complete conversation
+            const allAssistantMessages = messages.filter(msg => 
+              msg.role === 'assistant' && 
+              msg.content && 
+              msg.content.length > 0 &&
+              // Skip system messages and connection prompts
+              !msg.content.includes('Connection Required')
+            );
 
-            if (recentAssistantMessages.length > 0) {
-              chatContent = recentAssistantMessages
+            if (allAssistantMessages.length > 0) {
+              chatContent = allAssistantMessages
                 .map(msg => msg.content)
                 .join('\n\n---\n\n');
-              console.log(`✅ Extracted ${chatContent.length} characters from conversation history`);
+              console.log(`✅ Extracted ${chatContent.length} characters from ${allAssistantMessages.length} messages`);
             }
           }
 
-          // ✅ Find and inject chart image when relevant
+          // ✅ AUTOMATICALLY include ALL charts and images in any document
           try {
-            // Check if we should include chart based on multiple conditions
-            const promptLower = (prompt || '').toLowerCase();
-            const contentLower = chatContent.toLowerCase();
+            console.log('📊 Checking for charts, graphs, and images in conversation history...');
 
-            // Chart-related keywords
-            const chartKeywords = ['chart', 'graph', 'visualization', 'plot', 'diagram', 'شارٹ', 'گراف'];
+            // Find ALL messages with charts or images
+            const imageMessages = historyMessages.filter(msg => {
+              if (msg.role === 'ASSISTANT' && msg.files) {
+                try {
+                  const files = JSON.parse(msg.files);
+                  return Array.isArray(files) && files.some(f => (f.type === 'chart' && f.imageUrl) || (f.type === 'image' && f.url));
+                } catch { return false; }
+              }
+              return false;
+            });
 
-            // Content request keywords (when user asks for "all content", "complete content", etc.)
-            // English, Urdu, Spanish, Portuguese
-            const contentRequestKeywords = [
-              // English
-              'all', 'complete', 'entire', 'full', 'everything', 'above', 'whole',
-              // Urdu
-              'saara', 'sara', 'poora', 'tamam', 'uper', 'سارا', 'پورا', 'تمام', 'اوپر',
-              // Spanish
-              'todo', 'todos', 'completo', 'entero', 'arriba', 'superior', 'lleno',
-              // Portuguese  
-              'tudo', 'completo', 'inteiro', 'acima', 'superior', 'cheio'
-            ];
+            if (imageMessages.length > 0) {
+              console.log(`🖼️ Found ${imageMessages.length} image(s)/chart(s) - automatically including in document`);
 
-            // Condition 1: User explicitly mentions chart/graph
-            const hasChartKeywords = chartKeywords.some(keyword =>
-              promptLower.includes(keyword) || contentLower.includes(keyword)
-            );
-
-            // Condition 2: User asks for "all content" or "complete content"
-            const asksForAllContent = contentRequestKeywords.some(keyword =>
-              promptLower.includes(keyword)
-            );
-
-            // Condition 3: Check if the AI-generated content references a chart/visualization
-            const contentReferencesChart = /chart|graph|visualization|plot|diagram|شارٹ|گراف/i.test(chatContent);
-
-            // Include chart if ANY of these conditions are true
-            const shouldIncludeChart = hasChartKeywords || (asksForAllContent && contentReferencesChart);
-
-            if (shouldIncludeChart) {
-              const chartMessage = historyMessages
-                .slice()
-                .reverse()
-                .find(msg => {
-                  if (msg.role === 'ASSISTANT' && msg.files) {
-                    try {
-                      const files = JSON.parse(msg.files);
-                      return Array.isArray(files) && files.some(f => f.type === 'chart' && f.imageUrl);
-                    } catch { return false; }
+              // Collect all image/chart markdowns
+              const imageMarkdowns = [];
+              imageMessages.forEach((msg, index) => {
+                try {
+                  const files = JSON.parse(msg.files);
+                  const imageFile = files.find(f => (f.type === 'chart' && f.imageUrl) || (f.type === 'image' && f.url));
+                  if (imageFile) {
+                    const imageUrl = imageFile.imageUrl || imageFile.url;
+                    const imageType = imageFile.type === 'chart' ? 'Chart' : 'Image';
+                    const imageLabel = imageMessages.length > 1 ? `\n\n## ${imageType} ${index + 1}\n\n` : '\n\n';
+                    imageMarkdowns.push(`${imageLabel}![${imageType} Visualization](${imageUrl})\n\n`);
                   }
-                  return false;
-                });
-
-              if (chartMessage) {
-                const files = JSON.parse(chartMessage.files);
-                const chartFile = files.find(f => f.type === 'chart' && f.imageUrl);
-                if (chartFile && chartFile.imageUrl) {
-                  console.log(`🖼️ Including chart in document (hasChartKeywords: ${hasChartKeywords}, asksForAllContent: ${asksForAllContent}, contentReferencesChart: ${contentReferencesChart})`);
-                  // Prepend the image in Markdown format. Pandoc will handle the conversion.
-                  const chartImageMarkdown = `![Chart Visualization](${chartFile.imageUrl})\n\n`;
-                  chatContent = chartImageMarkdown + chatContent;
+                } catch (e) {
+                  console.error('Error parsing image/chart file:', e);
                 }
+              });
+
+              // Prepend all images/charts to content
+              if (imageMarkdowns.length > 0) {
+                chatContent = imageMarkdowns.join('') + chatContent;
+                console.log(`✅ Automatically added ${imageMarkdowns.length} image(s)/chart(s) to document`);
               }
             } else {
-              console.log('📄 Chart not relevant for this document. Skipping chart injection.');
+              console.log('📄 No charts or images found in conversation history');
             }
-          } catch (chartError) {
-            console.error("Error processing chart for document:", chartError);
+          } catch (imageError) {
+            console.error("Error processing images/charts for document:", imageError);
           }
 
           // Remove any [CREATE_DOCUMENT] tags from the main response to avoid duplication
@@ -691,7 +683,7 @@ IMPORTANT: Never regenerate content when the user clearly references previously 
             newFiles = [];
           }
         }
-        console.log('finalContent', finalContent);
+       
 
         await saveChatAndTrackUsage(userId, canPersist ? chatId : null, prompt, finalContent, tokens, actualModel, processedFiles, newFiles);
       } else {
