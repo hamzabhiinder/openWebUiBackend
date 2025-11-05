@@ -207,8 +207,6 @@ enum ModelType {
 
 enum Plan {
   FREE
-  BASIC
-  STANDARD
   PRO
   PRO_MAX
   ENTERPRISE
