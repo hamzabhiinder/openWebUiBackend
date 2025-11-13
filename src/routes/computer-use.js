@@ -193,7 +193,7 @@ Provide a plan in this JSON format:
     "Step 3: Perform search or action",
     "Step 4: Review results"
   ],
-  "startingUrl": "https://duckduckgo.com"
+  "startingUrl": "https://www.bing.com"
 }
 
 Task: ${task}`;
@@ -215,14 +215,14 @@ Task: ${task}`;
       return {
         reasoning: "I'll help you accomplish this task step by step",
         steps: ["Navigate to relevant website", "Perform required actions"],
-        startingUrl: "https://duckduckgo.com"
+        startingUrl: "https://www.bing.com"
       };
     } catch (error) {
       console.error('Error generating plan:', error);
       return {
         reasoning: "Starting with a basic approach",
         steps: ["Navigate to DuckDuckGo", "Search for information"],
-        startingUrl: "https://duckduckgo.com"
+        startingUrl: "https://www.bing.com"
       };
     }
   }
@@ -415,7 +415,7 @@ async function getScreenshot(page) {
 //           try {
 //             if (task.toLowerCase().includes('search') || task.toLowerCase().includes('google')) {
 //               console.log('Trying DuckDuckGo as alternative search engine...');
-//               await page.goto('https://duckduckgo.com', { waitUntil: 'networkidle' });
+//               await page.goto('https://www.bing.com', { waitUntil: 'networkidle' });
 //               await page.waitForTimeout(2000);
 
 //               broadcastToSession(sessionId, {
@@ -1948,7 +1948,7 @@ router.post('/start', computerUseRateLimiter, computerUseSafetyCheck, async (req
 
     // // Navigate to starting URL from plan
     // const startingUrl = plan.startingUrl || 'https://www.google.com';
-    const startingUrl = 'https://duckduckgo.com';
+    const startingUrl = 'https://www.bing.com';
     await page.goto(startingUrl);
     await page.waitForLoadState('networkidle');
 
