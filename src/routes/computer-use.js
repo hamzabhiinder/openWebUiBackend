@@ -2172,7 +2172,8 @@ router.post('/chat-integration', async (req, res) => {
     console.log('Session stored:', activeSessions.get(computeSessionId));
 
     // Start computer use session
-    const startResponse = await fetch(`http://localhost:5000/api/computer-use/start`, {
+     const baseUrl = process.env.NEXT_PUBLIC_IMAGE_URL || 'http://localhost:5000';
+    const startResponse = await fetch(`${baseUrl}/api/computer-use/start`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
