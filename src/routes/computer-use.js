@@ -193,7 +193,7 @@ Provide a plan in this JSON format:
     "Step 3: Perform search or action",
     "Step 4: Review results"
   ],
-  "startingUrl": "https://www.google.com"
+  "startingUrl": "https://duckduckgo.com"
 }
 
 Task: ${task}`;
@@ -215,14 +215,14 @@ Task: ${task}`;
       return {
         reasoning: "I'll help you accomplish this task step by step",
         steps: ["Navigate to relevant website", "Perform required actions"],
-        startingUrl: "https://www.google.com"
+        startingUrl: "https://duckduckgo.com"
       };
     } catch (error) {
       console.error('Error generating plan:', error);
       return {
         reasoning: "Starting with a basic approach",
-        steps: ["Navigate to Google", "Search for information"],
-        startingUrl: "https://www.google.com"
+        steps: ["Navigate to DuckDuckGo", "Search for information"],
+        startingUrl: "https://duckduckgo.com"
       };
     }
   }
@@ -1947,7 +1947,8 @@ router.post('/start', computerUseRateLimiter, computerUseSafetyCheck, async (req
     // });
 
     // // Navigate to starting URL from plan
-    const startingUrl = plan.startingUrl || 'https://www.google.com';
+    // const startingUrl = plan.startingUrl || 'https://www.google.com';
+    const startingUrl = 'https://duckduckgo.com';
     await page.goto(startingUrl);
     await page.waitForLoadState('networkidle');
 
