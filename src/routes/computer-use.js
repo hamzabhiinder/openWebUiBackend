@@ -1843,7 +1843,7 @@ router.post('/start', computerUseRateLimiter, computerUseSafetyCheck, async (req
     const plan = await agent.generateInitialPlan(task);
     // Launch browser with optimized settings for speed and CAPTCHA avoidance
     const browser = await chromium.launch({
-      headless: false, // Keep headless for better performance and CAPTCHA avoidance
+      headless: true, // Keep headless for better performance and CAPTCHA avoidance
       args: [
         '--no-sandbox',
         '--disable-setuid-sandbox',
