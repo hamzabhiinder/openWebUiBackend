@@ -2172,7 +2172,11 @@ router.post('/chat-integration', async (req, res) => {
     console.log('Session stored:', activeSessions.get(computeSessionId));
 
     // Start computer use session
+    console.log("CHECKING ENV VAR:", process.env.NEXT_PUBLIC_IMAGE_URL); // Yeh line add karein
+
     const baseUrl = process.env.NEXT_PUBLIC_IMAGE_URL || 'http://localhost:5000';
+
+    console.log("USING THIS URL FOR FETCH:", baseUrl); // Yeh line bhi add karein
     const startResponse = await fetch(`${baseUrl}/api/computer-use/start`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
