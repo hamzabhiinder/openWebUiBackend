@@ -1053,7 +1053,7 @@ async function searchMultipleSources(topic, sessionId) {
     //   viewport: { width: 1280, height: 720 } // Set consistent viewport for screenshots
     // });
     browser = await chromium.launch({
-      headless: true, // Keep headless for better performance and CAPTCHA avoidance
+      headless: false, // Keep headless for better performance and CAPTCHA avoidance
       args: [
         '--no-sandbox',
         '--disable-setuid-sandbox',
