@@ -236,4 +236,173 @@ router.delete('/:id', authenticateToken, async (req, res) => {
   }
 });
 
+// Convert SFDT to DOCX
+router.post('/convert-sfdt', authenticateToken, async (req, res) => {
+  try {
+    const { sfdtData, fileName } = req.body;
+
+    if (!sfdtData) {
+      return res.status(400).json({ error: 'SFDT data is required' });
+    }
+
+    // Use Syncfusion DocumentEditor service to convert SFDT to DOCX
+    const syncfusionServiceUrl = 'https://ej2services.syncfusion.com/production/web-services/api/documenteditor/';
+    
+    const axios = require('axios');
+    const response = await axios.post(
+      `${syncfusionServiceUrl}Export`,
+      {
+        content: sfdtData,
+        format: 'Docx'
+      },
+      {
+        responseType: 'arraybuffer',
+        headers: {
+          'Content-Type': 'application/json'
+        }
+      }
+    );
+
+    // Set response headers for file download
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
+    res.setHeader('Content-Disposition', `attachment; filename="${fileName || 'document.docx'}"`);
+    res.send(Buffer.from(response.data));
+
+  } catch (error) {
+    console.error('SFDT conversion error:', error);
+    res.status(500).json({ error: 'Failed to convert SFDT to DOCX' });
+  }
+});
+
+// Save document to original path
+router.post('/save-document', authenticateToken, async (req, res) => {
+  try {
+    const { sfdtData, fileName, filePath, originalUrl } = req.body;
+    const userId = req.user.id;
+
+    if (!sfdtData) {
+      return res.status(400).json({ error: 'SFDT data is required' });
+    }
+
+    // Extract filename from URL or use provided fileName
+    let targetFilename = fileName;
+    let targetPath = null;
+
+    // Try to find existing file from URL
+    if (originalUrl) {
+      // URL format: /uploads/{userId}/{filename} or http://.../uploads/{userId}/{filename}
+      const urlMatch = originalUrl.match(/uploads\/([^\/]+)\/([^\/\?]+)/);
+      if (urlMatch) {
+        const urlUserId = urlMatch[1];
+        const urlFilename = urlMatch[2];
+        
+        // Verify it's the same user
+        if (urlUserId === userId) {
+          // Find file in database
+          const existingFile = await prisma.file.findFirst({
+            where: {
+              filename: urlFilename,
+              userId: userId
+            }
+          });
+
+          if (existingFile) {
+            targetPath = existingFile.path;
+            targetFilename = existingFile.filename;
+          } else {
+            // File not in DB, construct path from URL
+            targetPath = path.join(__dirname, '../../uploads', userId, urlFilename);
+            targetFilename = urlFilename;
+          }
+        }
+      }
+    }
+
+    // If no path found, use filePath parameter
+    if (!targetPath && filePath) {
+      targetPath = path.join(__dirname, '../../uploads', filePath);
+    }
+
+    // If still no path, create new file
+    if (!targetPath) {
+      const uploadsDir = path.join(__dirname, '../../uploads', userId);
+      await fs.mkdir(uploadsDir, { recursive: true });
+      const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
+      targetFilename = targetFilename || `document-${uniqueSuffix}.docx`;
+      targetPath = path.join(uploadsDir, targetFilename);
+    }
+
+    // Ensure directory exists
+    await fs.mkdir(path.dirname(targetPath), { recursive: true });
+
+    // Convert SFDT to DOCX using Syncfusion service
+    const syncfusionServiceUrl = 'https://ej2services.syncfusion.com/production/web-services/api/documenteditor/';
+    const axios = require('axios');
+    
+    const response = await axios.post(
+      `${syncfusionServiceUrl}Export`,
+      {
+        content: sfdtData,
+        format: 'Docx'
+      },
+      {
+        responseType: 'arraybuffer',
+        headers: {
+          'Content-Type': 'application/json'
+        }
+      }
+    );
+
+    // Save file to path
+    await fs.writeFile(targetPath, Buffer.from(response.data));
+
+    // Update or create file record in database
+    const fileSize = response.data.length;
+    const existingFile = await prisma.file.findFirst({
+      where: { 
+        filename: targetFilename, 
+        userId: userId 
+      }
+    });
+
+    let fileRecord;
+    if (existingFile) {
+      // Update existing file
+      fileRecord = await prisma.file.update({
+        where: { id: existingFile.id },
+        data: {
+          size: fileSize,
+          path: targetPath,
+          mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+        }
+      });
+    } else {
+      // Create new file record
+      fileRecord = await prisma.file.create({
+        data: {
+          userId: userId,
+          filename: targetFilename,
+          originalName: targetFilename,
+          mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+          size: fileSize,
+          path: targetPath
+        }
+      });
+    }
+
+    res.json({
+      message: `Document saved successfully: ${targetFilename}`,
+      file: {
+        id: fileRecord.id,
+        filename: targetFilename,
+        url: `/uploads/${userId}/${targetFilename}`
+      }
+    });
+
+  } catch (error) {
+    console.error('Save document error:', error);
+    res.status(500).json({ error: 'Failed to save document: ' + (error.message || 'Unknown error') });
+  }
+});
+
 module.exports = router;
