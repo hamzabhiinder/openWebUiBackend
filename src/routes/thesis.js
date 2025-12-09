@@ -6,8 +6,7 @@ const OpenAI = require('openai');
 const { createDocument } = require('../services/document-service');
 const { chromium } = require('playwright');
 const fs = require('fs').promises;
-const fsSync = require('fs');
-const fsSync = require('fs');
+const fsSync = require('fs'); 
 const path = require('path');
 
 const router = express.Router();
