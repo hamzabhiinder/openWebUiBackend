@@ -1,0 +1,358 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("PRISMA_DATABASE_URL")
+}
+
+model User {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  name         String
+  password     String
+  avatar       String?
+  googleId     String?  @unique
+  plan         Plan     @default(FREE)
+  isAdmin      Boolean  @default(false)
+  apiUsage     BigInt      @default(0)
+  monthlyCallLimit BigInt  @default(3)        // NEW: counts number of generate calls / month
+  monthlyLimit BigInt      @default(1000) 
+  
+  // Gmail Integration
+  gmailTokens  String?  // Store encrypted Gmail OAuth tokens as JSON
+  
+  // Google Services Integration (Calendar & Drive)
+  googleServicesTokens String?  // Store encrypted Google OAuth tokens for Calendar & Drive as JSON
+
+  // Spotify Integration
+  spotifyTokens String? // Store encrypted Spotify OAuth tokens as JSON
+  
+  // Stripe Integration Fields
+  stripeCustomerId     String?  @unique
+  stripeSubscriptionId String?  @unique
+  subscriptionStatus   String?  // active, inactive, canceled, past_due
+  subscriptionEndDate  DateTime?
+  
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  // Relations
+  chats     Chat[]
+  payments  Payment[]
+  apiUsages ApiUsage[]
+  sessions  Session[]
+  files     File[]
+  createdGpts CustomGpt[]
+  usageAlerts UsageAlert[]
+  notifications Notification[]
+  subscriptionEvents SubscriptionEvent[]
+
+  @@map("users")
+}
+
+model AiModel {
+  id          String   @id @default(cuid())
+  name        String   @unique
+  displayName String
+  provider    String
+  description String?
+  apiKey      String?
+  type        ModelType    @default(TEXT) // <-- NAYA: Model ki type (TEXT/IMAGE)
+  icon        String? 
+  isActive    Boolean  @default(true)
+  
+  // Auto-sync tracking fields
+  lastSynced   DateTime?
+  syncSource   String?   @default("manual") // "api", "manual", "scheduled"
+  contextLength Int?     // Model's context window size
+  pricing      Json?     // Provider pricing information
+  tags         String[]  // Model tags/categories
+  
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@map("ai_models")
+}
+
+model Session {
+  id        String   @id @default(cuid())
+  userId    String
+  token     String   @unique
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("sessions")
+}
+
+model Chat {
+  id        String   @id @default(cuid())
+  userId    String
+  title     String
+  model     String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+
+  isShared  Boolean  @default(false)
+  shareId   String?  @unique 
+
+  googleCalendarContext Json?      // NEW: Store recent Google Calendar event IDs for context
+
+// GPT Integration
+  customGptId String?
+  customGpt   CustomGpt? @relation(fields: [customGptId], references: [id], onDelete: SetNull)
+
+  // Relations
+  user     User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  messages Message[]
+  sharedMessages MessageShare[] @relation("SharedMessages")
+
+  @@map("chats")
+}
+
+model Message {
+  id        String      @id @default(cuid())
+  chatId    String
+  role      MessageRole
+  content   String      @db.Text
+  tokens    BigInt?
+  timestamp DateTime    @default(now())
+  files     Json?       // Store file references
+  metadata  Json?       // Store message metadata (like Gmail connection requirements)
+  feedback  String? 
+
+  // Relations
+  chat Chat @relation(fields: [chatId], references: [id], onDelete: Cascade)
+
+  @@map("messages")
+}
+
+model MessageShare {
+  id                  String   @id @default(cuid())
+  messageId           String   // The original message that was shared
+  chatId              String   // The chat this message belongs to
+  userMessageId       String   // The user message in the pair
+  assistantMessageId  String   // The assistant message in the pair
+  sharedAt            DateTime @default(now())
+
+  // Relations
+  chat Chat @relation("SharedMessages", fields: [chatId], references: [id], onDelete: Cascade)
+
+  @@map("message_shares")
+}
+
+model File {
+  id          String   @id @default(cuid())
+  userId      String
+  filename    String
+  originalName String
+  mimeType    String
+  size        Int
+  path        String
+  extractedText String? @db.Text
+  openaiFileId String? // OpenAI Files API ID
+  createdAt   DateTime @default(now())
+
+  // Relations
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  customGptId String?
+  customGpt   CustomGpt? @relation("GptKnowledgeFiles", fields: [customGptId], references: [id],onDelete: SetNull)
+
+  @@map("files")
+}
+
+model Payment {
+  id          String        @id @default(cuid())
+  userId      String
+  amount      Float
+  currency    String        @default("USD")
+  status      PaymentStatus @default(PENDING)
+  plan        Plan
+  provider    PaymentProvider
+  providerId  String?       // External payment ID (Stripe session ID, PayPal order ID, etc.)
+  
+  // Stripe specific fields
+  stripeSessionId      String?  @unique
+  stripeSubscriptionId String?
+  stripeCustomerId     String?
+  stripePriceId        String?
+  
+  metadata    Json?
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+
+  // Relations
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("payments")
+}
+
+model ApiUsage {
+  id        String   @id @default(cuid())
+  userId    String
+  model     String
+  tokens    BigInt
+  cost      Float
+  timestamp DateTime @default(now())
+
+  // Relations
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("api_usage")
+}
+
+model SystemSettings {
+  id    String @id @default(cuid())
+  key   String @unique
+  value String @db.Text
+
+  @@map("system_settings")
+}
+enum ProviderType {
+  OpenAI
+  Gemini
+  OpenRouter
+  Groq
+  Custom // Mustaqbil ke liye
+}
+enum ModelType {
+  TEXT
+  IMAGE
+}
+
+enum Plan {
+  FREE
+  PRO
+  PRO_MAX
+  ENTERPRISE
+}
+
+enum MessageRole {
+  USER
+  ASSISTANT
+}
+
+enum PaymentStatus {
+  PENDING
+  COMPLETED
+  FAILED
+  CANCELLED
+}
+
+enum PaymentProvider {
+  STRIPE
+  PAYPAL
+  MERCADOPAGO
+}
+
+model UsageAlert {
+  id        String   @id @default(cuid())
+  userId    String
+  alertType String   // 'api_usage' | 'call_usage'
+  threshold Float    // 0.8, 0.9, 1.0
+  sentAt    DateTime @default(now())
+  
+  // Relations
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  @@map("usage_alerts")
+}
+
+model Notification {
+  id       String   @id @default(cuid())
+  userId   String
+  type     String   // 'usage_warning', 'payment_failed', 'subscription_ending'
+  title    String
+  message  String   @db.Text
+  severity String   // 'info', 'warning', 'critical'
+  read     Boolean  @default(false)
+  metadata Json?    // Additional data
+  createdAt DateTime @default(now())
+  readAt    DateTime?
+  
+  // Relations
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  @@map("notifications")
+}
+
+model SubscriptionEvent {
+  id              String   @id @default(cuid())
+  userId          String
+  eventType       String   // 'created', 'updated', 'canceled', 'reactivated'
+  previousPlan    String?
+  newPlan         String?
+  eventData       Json?    // Store full event data
+  stripeEventId   String?  @unique
+  processedAt     DateTime @default(now())
+  
+  // Relations
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  @@map("subscription_events")
+}
+model AnonymousUsage {
+  id          String   @id @default(cuid())
+  anonId      String   @unique
+  usedQueries Int      @default(0)
+  ipAddress   String?
+  userAgent   String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@map("anonymous_usage")
+}
+
+enum GptVisibility {
+  PRIVATE
+  UNLISTED
+  PUBLIC
+}
+
+model CustomGpt {
+  id          String      @id @default(cuid())
+  creatorId   String
+  creator     User        @relation(fields: [creatorId], references: [id], onDelete: Cascade)
+  
+  // Basic Info
+  name        String
+  description String?     @db.Text
+  iconUrl     String?     
+  
+  // Behavior Configuration
+  instructions        String      @db.Text
+  greetingMessage     String?     @db.Text
+  
+  // Model Parameters
+  modelName           String      @default("gpt-3.5-turbo")
+  temperature         Float       @default(0.7)
+  maxTokens           Int?
+
+  // Knowledge Files
+  knowledgeFiles      File[]      @relation("GptKnowledgeFiles")
+
+  // 🔹 Add this line (reverse relation for Chat)
+  chats               Chat[]
+
+  // Actions
+  actions             Json?
+  conversationStarters Json?      
+
+  // Publishing
+  visibility          GptVisibility @default(PRIVATE)
+  shareId             String      @unique @default(cuid())
+  category            String?
+  isFeatured          Boolean     @default(false) 
+  createdAt           DateTime    @default(now())
+  updatedAt           DateTime    @updatedAt
+
+  @@map("custom_gpts")
+}
