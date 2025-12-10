@@ -30,6 +30,7 @@ const spotifyRoutes = require('./src/routes/spotify');
 const figmaRoutes = require('./src/routes/figma');
 const { router: computerUseRoutes, initializeWebSocketServer } = require('./src/routes/computer-use');
 const thesisRoutes = require('./src/routes/thesis');
+const onlyofficeRoutes = require('./src/routes/onlyoffice');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -135,6 +136,7 @@ app.use('/api/spotify', spotifyRoutes);
 app.use('/api/figma', figmaRoutes);
 app.use('/api/computer-use', computerUseRoutes);
 app.use('/api/thesis', thesisRoutes);
+app.use('/api/onlyoffice', onlyofficeRoutes);
 
 // Error handling middleware
 app.use((err, req, res, next) => {

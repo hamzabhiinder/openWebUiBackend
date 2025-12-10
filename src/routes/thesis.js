@@ -7,117 +7,10 @@ const { createDocument } = require('../services/document-service');
 const { chromium } = require('playwright');
 const fs = require('fs').promises;
 const fsSync = require('fs');
-const fsSync = require('fs');
 const path = require('path');
 
 const router = express.Router();
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-
-/**
- * Get AI client based on provider with automatic fallback support
- * @param {string} provider - Provider name ('OpenAI', 'Gemini', 'OpenRouter')
- * @param {boolean} useFallback - Whether to enable automatic fallback to Gemini on errors
- * @returns {Object} - { client: OpenAI, provider: string, model: string }
- */
-function getAIClient(provider = 'OpenAI', useFallback = true) {
-  let client;
-  let actualProvider = provider;
-  let model;
-
-  // Detect provider from model name if provider not specified
-  if (!provider || provider === 'OpenAI') {
-    client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-    actualProvider = 'OpenAI';
-    model = 'gpt-4o-mini';
-  } else if (provider === 'Gemini' || provider?.includes('gemini')) {
-    client = new OpenAI({
-      apiKey: process.env.GEMINI_API_KEY,
-      baseURL: "https://generativelanguage.googleapis.com/v1beta/openai/",
-    });
-    actualProvider = 'Gemini';
-    model = 'gemini-2.0-flash-exp';
-  } else if (provider === 'OpenRouter') {
-    client = new OpenAI({
-      apiKey: process.env.OPENROUTER_API_KEY,
-      baseURL: "https://openrouter.ai/api/v1",
-    });
-    actualProvider = 'OpenRouter';
-    model = 'openai/gpt-4o-mini';
-  } else {
-    // Default to OpenAI
-    client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-    actualProvider = 'OpenAI';
-    model = 'gpt-4o-mini';
-  }
-
-  return { client, provider: actualProvider, model, useFallback };
-}
-
-/**
- * Make AI API call with automatic fallback to Gemini if OpenAI fails
- * @param {Object} params - { client, provider, model, useFallback, messages, temperature, max_tokens }
- * @returns {Promise} - API response
- */
-async function makeAIRequest(params) {
-  const { client, provider, model, useFallback, messages, temperature = 0.7, max_tokens } = params;
-
-  try {
-    const response = await client.chat.completions.create({
-      model: model,
-      messages: messages,
-      temperature: temperature,
-      max_tokens: max_tokens
-    });
-    return response;
-  } catch (error) {
-    // Check if error is due to credits/authentication issues
-    const isCreditsError = error.message?.includes('insufficient_quota') ||
-      error.message?.includes('billing') ||
-      error.message?.includes('rate_limit') ||
-      error.message?.includes('invalid_api_key') ||
-      error.status === 429 ||
-      error.status === 401 ||
-      error.status === 402;
-
-    // If OpenAI fails and fallback is enabled, try Gemini
-    if (useFallback && provider === 'OpenAI' && isCreditsError) {
-      console.log(`⚠️ OpenAI failed (${error.message}), falling back to Gemini...`);
-
-      try {
-        const geminiClient = new OpenAI({
-          apiKey: process.env.GEMINI_API_KEY,
-          baseURL: "https://generativelanguage.googleapis.com/v1beta/openai/",
-        });
-
-        // Map OpenAI models to Gemini equivalents
-        let geminiModel = 'gemini-2.0-flash-exp';
-        if (model?.includes('gpt-4') || model?.includes('turbo')) {
-          geminiModel = 'gemini-2.0-flash-exp';
-        } else if (model?.includes('gpt-3.5')) {
-          geminiModel = 'gemini-1.5-flash';
-        }
-
-        console.log(`🔄 Using Gemini model: ${geminiModel}`);
-
-        const response = await geminiClient.chat.completions.create({
-          model: geminiModel,
-          messages: messages,
-          temperature: temperature,
-          max_tokens: max_tokens
-        });
-
-        console.log(`✅ Successfully used Gemini as fallback`);
-        return response;
-      } catch (geminiError) {
-        console.error(`❌ Gemini fallback also failed:`, geminiError.message);
-        throw new Error(`Both OpenAI and Gemini failed. OpenAI: ${error.message}, Gemini: ${geminiError.message}`);
-      }
-    }
-
-    // Re-throw original error if no fallback or fallback not applicable
-    throw error;
-  }
-}
 
 /**
  * Get max_tokens limit for a model
@@ -125,7 +18,6 @@ async function makeAIRequest(params) {
  */
 function getMaxTokensForModel(model) {
   const modelLimits = {
-    // OpenAI models
     'gpt-3.5-turbo': 4096,
     'gpt-3.5-turbo-16k': 16384,
     'gpt-4': 8192,
@@ -135,24 +27,11 @@ function getMaxTokensForModel(model) {
     'gpt-4o': 128000,
     'gpt-4o-mini': 16384,
     'gpt-4o-mini-search-preview-2025-03-11': 16384,
-    // Gemini models
-    'gemini-2.0-flash-exp': 1000000,
-    'gemini-1.5-pro': 2000000,
-    'gemini-1.5-flash': 1000000,
-    'gemini-pro': 30000,
-    // OpenRouter models (use OpenAI limits)
-    'openai/gpt-4-turbo': 128000,
-    'openai/gpt-4o': 128000,
-    'openai/gpt-4': 8192,
   };
 
   // Find matching model (handles partial matches)
   for (const [key, limit] of Object.entries(modelLimits)) {
     if (model.includes(key) || model === key) {
-      // For Gemini models, use larger limits
-      if (model.includes('gemini')) {
-        return Math.min(limit - 2000, 8000); // Larger limit for Gemini
-      }
       return Math.min(limit - 1000, 4000); // Reserve 1000 tokens for safety, max 4000 for completion
     }
   }
@@ -326,14 +205,8 @@ Return ONLY the optimized query string (not an array). Example:
 
 CRITICAL: Return ONLY ONE query string. Do NOT return multiple queries or an array.`;
 
-    // Get AI client - use OpenAI by default, but support provider parameter
-    const aiConfig = getAIClient('OpenAI', true);
-
-    const response = await makeAIRequest({
-      client: aiConfig.client,
-      provider: aiConfig.provider,
-      model: aiConfig.model,
-      useFallback: aiConfig.useFallback,
+    const response = await openai.chat.completions.create({
+      model: 'gpt-4o-mini',
       messages: [
         { role: 'system', content: 'You are an expert research librarian. Generate ONE optimized academic search query. Return only the query string, not an array.' },
         { role: 'user', content: analysisPrompt }
@@ -1367,7 +1240,7 @@ async function extractContentFromUrl(url, topic) {
  * Generate thesis from collected research using chunking approach
  * Similar to how Cursor handles large files - divides content into manageable chunks
  */
-async function generateThesis(topics, allSearchResults, userId, sessionId, provider = 'OpenAI') {
+async function generateThesis(topics, allSearchResults, userId, sessionId) {
   try {
     // Update progress
     const existingSession = thesisSessions.get(sessionId);
@@ -1377,37 +1250,14 @@ async function generateThesis(topics, allSearchResults, userId, sessionId, provi
       existingSession.message = 'Preparing research materials and generating thesis...';
     }
 
-    // Get AI client based on provider
-    const aiConfig = getAIClient(provider, true);
-    let client = aiConfig.client;
-    let currentProvider = aiConfig.provider;
-    let useFallback = aiConfig.useFallback;
-
     // Use a model with large context window - prefer newer models
-    // Adjust models based on provider
-    let availableModels;
-    if (currentProvider === 'Gemini') {
-      availableModels = [
-        'gemini-2.0-flash-exp',
-        'gemini-1.5-pro',
-        'gemini-1.5-flash'
-      ];
-    } else if (currentProvider === 'OpenRouter') {
-      availableModels = [
-        'openai/gpt-4-turbo',
-        'openai/gpt-4o',
-        'openai/gpt-4'
-      ];
-    } else {
-      // OpenAI
-      availableModels = [
-        'gpt-4-turbo-preview',
-        'gpt-4-1106-preview',
-        'gpt-4-turbo',
-        'gpt-4o',
-        'gpt-4'
-      ];
-    }
+    const availableModels = [
+      'gpt-4-turbo-preview',
+      'gpt-4-1106-preview',
+      'gpt-4-turbo',
+      'gpt-4o',
+      'gpt-4'
+    ];
 
     // Try to use the best available model
     let model = availableModels[0];
@@ -1416,32 +1266,15 @@ async function generateThesis(topics, allSearchResults, userId, sessionId, provi
     // Test model availability and adjust if needed
     try {
       // Test with a small request to verify model
-      await makeAIRequest({
-        client: client,
-        provider: currentProvider,
+      await openai.chat.completions.create({
         model: model,
-        useFallback: useFallback,
         messages: [{ role: 'user', content: 'test' }],
         max_tokens: 10
       });
     } catch (error) {
       console.error('Error with primary model, trying fallback:', error);
-      model = availableModels[1] || availableModels[0];
+      model = availableModels[1] || 'gpt-4';
       maxTokens = getMaxTokensForModel(model);
-
-      // If still failing and using OpenAI, try Gemini fallback
-      if (currentProvider === 'OpenAI' && useFallback) {
-        try {
-          const geminiConfig = getAIClient('Gemini', false);
-          client = geminiConfig.client;
-          currentProvider = geminiConfig.provider;
-          model = geminiConfig.model;
-          maxTokens = getMaxTokensForModel(model);
-          console.log(`🔄 Switched to Gemini: ${model}`);
-        } catch (fallbackError) {
-          console.error('Fallback to Gemini failed:', fallbackError);
-        }
-      }
     }
 
     // System prompt for thesis generation
@@ -1559,11 +1392,8 @@ Write the complete thesis in Markdown format with proper formatting.`;
           : `${researchChunk}\n\nContinue and expand the ${section.name} section using this additional research material.`;
 
         try {
-          const response = await makeAIRequest({
-            client: client,
-            provider: currentProvider,
+          const response = await openai.chat.completions.create({
             model: model,
-            useFallback: useFallback,
             messages: [
               { role: 'system', content: systemPrompt },
               ...(thesisContent ? [{ role: 'assistant', content: `Previous thesis content:\n${thesisContent.substring(0, 5000)}...` }] : []),
@@ -1608,11 +1438,8 @@ Write the complete thesis in Markdown format with proper formatting.`;
             console.log(`Reducing max_tokens to ${maxTokens} and retrying...`);
 
             try {
-              const retryResponse = await makeAIRequest({
-                client: client,
-                provider: currentProvider,
+              const retryResponse = await openai.chat.completions.create({
                 model: model,
-                useFallback: useFallback,
                 messages: [
                   { role: 'system', content: systemPrompt },
                   { role: 'user', content: userPrompt }
@@ -1685,11 +1512,8 @@ IMPORTANT: Use ALL the research materials provided. Do not skip any sources. Mak
 
 Continue from the current thesis and maintain academic quality. Write extensively.`;
 
-        const expansionResponse = await makeAIRequest({
-          client: client,
-          provider: currentProvider,
+        const expansionResponse = await openai.chat.completions.create({
           model: model,
-          useFallback: useFallback,
           messages: [
             { role: 'system', content: systemPrompt },
             { role: 'user', content: `Current thesis:\n\n${thesisContent.substring(0, 10000)}...\n\n${expansionPrompt}` }
@@ -1722,7 +1546,6 @@ router.post(
     body('topics').isArray().withMessage('Topics must be an array'),
     body('topics.*').isString().trim().notEmpty().withMessage('Each topic must be a non-empty string'),
     body('chatId').optional().isString(),
-    body('provider').optional().isString().isIn(['OpenAI', 'Gemini', 'OpenRouter']).withMessage('Provider must be OpenAI, Gemini, or OpenRouter'),
   ],
   authenticateToken,
   async (req, res) => {
@@ -1732,10 +1555,8 @@ router.post(
         return res.status(400).json({ errors: errors.array() });
       }
 
-      let { topics, chatId, provider = 'OpenAI' } = req.body;
+      let { topics, chatId } = req.body;
       const userId = req.user.id;
-
-      console.log(`📝 Thesis generation requested with provider: ${provider}`);
 
       if (!topics || topics.length === 0) {
         return res.status(400).json({ error: 'At least one topic is required' });
@@ -1858,7 +1679,7 @@ router.post(
       await new Promise(resolve => setTimeout(resolve, 100));
 
       // Process in background
-      processThesisGeneration(sessionId, topics, userId, chatId, provider).catch(error => {
+      processThesisGeneration(sessionId, topics, userId, chatId).catch(error => {
         console.error('Background thesis generation error:', error);
         const errorSession = thesisSessions.get(sessionId);
         if (errorSession) {
@@ -1887,7 +1708,7 @@ router.post(
 /**
  * Background thesis generation process
  */
-async function processThesisGeneration(sessionId, topics, userId, chatId, provider = 'OpenAI') {
+async function processThesisGeneration(sessionId, topics, userId, chatId) {
   console.log(`\n🚀 Starting processThesisGeneration for session: ${sessionId}`);
   console.log(`📝 Topics received: ${topics.length} - ${topics.join(', ')}`);
   console.log(`📊 Active sessions before process: ${thesisSessions.size}`);
@@ -2141,7 +1962,7 @@ async function processThesisGeneration(sessionId, topics, userId, chatId, provid
       sessionUpdate4.lastUpdated = new Date().toISOString();
     }
 
-    const thesisContent = await generateThesis(uniqueTopics, allSearchResults, userId, sessionId, provider);
+    const thesisContent = await generateThesis(uniqueTopics, allSearchResults, userId, sessionId);
 
     const sessionUpdate5 = thesisSessions.get(sessionId);
     if (sessionUpdate5) {
@@ -2329,26 +2150,26 @@ router.get('/download/:sessionId', authenticateToken, async (req, res) => {
 
     // Check if this is a preview request (for viewing in browser)
     const isPreview = req.query.preview === 'true';
-
+    
     if (isPreview) {
       // For preview, serve with inline content disposition and proper headers
       const fileExtension = path.extname(session.documentFilename).toLowerCase();
       let contentType = 'application/octet-stream';
-
+      
       // Set appropriate content type
       if (fileExtension === '.docx' || fileExtension === '.doc') {
         contentType = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
       } else if (fileExtension === '.pdf') {
         contentType = 'application/pdf';
       }
-
+      
       // Set headers for preview (inline viewing)
       res.setHeader('Content-Type', contentType);
       res.setHeader('Content-Disposition', `inline; filename="${session.documentFilename}"`);
       res.setHeader('Access-Control-Allow-Origin', '*');
       res.setHeader('Access-Control-Allow-Methods', 'GET');
       res.setHeader('Access-Control-Allow-Headers', 'Authorization');
-
+      
       // Send file for preview
       const fileStream = fsSync.createReadStream(session.documentPath);
       fileStream.pipe(res);
@@ -2438,26 +2259,26 @@ router.get('/files/:filename', async (req, res) => {
 
     // Check if this is a preview request (for viewing in browser)
     const isPreview = req.query.preview === 'true';
-
+    
     if (isPreview) {
       // For preview, serve with inline content disposition and proper headers
       const fileExtension = path.extname(filename).toLowerCase();
       let contentType = 'application/octet-stream';
-
+      
       // Set appropriate content type
       if (fileExtension === '.docx' || fileExtension === '.doc') {
         contentType = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
       } else if (fileExtension === '.pdf') {
         contentType = 'application/pdf';
       }
-
+      
       // Set headers for preview (inline viewing)
       res.setHeader('Content-Type', contentType);
       res.setHeader('Content-Disposition', `inline; filename="${filename}"`);
       res.setHeader('Access-Control-Allow-Origin', '*');
       res.setHeader('Access-Control-Allow-Methods', 'GET');
       res.setHeader('Access-Control-Allow-Headers', 'Authorization');
-
+      
       // Send file for preview
       const fileStream = fsSync.createReadStream(filePath);
       fileStream.pipe(res);
