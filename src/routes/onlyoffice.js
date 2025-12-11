@@ -88,7 +88,10 @@ router.get('/get-config', (req, res) => {
                 },
                 "customization": {
                     "autosave": true,
-                    "forcesave": true
+                    "forcesave": true,
+                    "spellcheck": false,
+                    "macros": false,
+                    "macrosMode": "disabled",
                 }
             }
         };

@@ -335,7 +335,7 @@ async function createDocx(filePath, content) {
     const tempMarkdownPath = filePath + '.md';
     await fs.writeFile(tempMarkdownPath, cleanedContent);
 
-    // --- Step 4: Create reference doc for Calibri font and nice base styles ---
+    // --- Step 4: Create reference doc for Times New Roman font and default size 12pt ---
     const referenceDoc = new Document({
         sections: [{
             children: [new Paragraph({ text: "Reference Document", heading: HeadingLevel.HEADING_1 })]
@@ -343,7 +343,7 @@ async function createDocx(filePath, content) {
         styles: {
             default: {
                 document: {
-                    run: { font: "Calibri", size: 22 },
+                    run: { font: "Times New Roman", size: 24 }, // 24 half-points = 12pt (standard size)
                     paragraph: { spacing: { line: 276, before: 10, after: 10 } }
                 }
             }
