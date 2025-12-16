@@ -6,6 +6,7 @@ const { Document, Packer, Paragraph, HeadingLevel } = require('docx');
 const puppeteer = require('puppeteer');
 const PizZip = require('pizzip');
 const axios = require('axios');
+const ExcelJS = require('exceljs');
 
 
 async function createDocx(filePath, content) {
@@ -13,8 +14,9 @@ async function createDocx(filePath, content) {
     const tempDir = path.join(__dirname, '../../uploads/temp');
     await fs.mkdir(tempDir, { recursive: true });
 
-    // const imageFiles = [];
-    // let imageCounter = 0;
+    // NOTE: Image extraction is currently disabled, but the cleanup path expects `imageFiles`.
+    // Keep this defined to avoid runtime ReferenceError.
+    const imageFiles = [];
 
     // Extract all images (base64 and URLs) and save them as files synchronously
     // const allImageMatches = Array.from(content.matchAll(/!\[([^\]]*)\]\(([^)]+)\)/g));
@@ -289,6 +291,327 @@ async function createDocx(filePath, content) {
     await fs.writeFile(filePath, modifiedBuffer);
 }
 
+function tryParseJson(content) {
+    try {
+        return JSON.parse(content);
+    } catch {
+        return null;
+    }
+}
+
+function parseCsvLike(content) {
+    const trimmed = (content || '').trim();
+    if (!trimmed) return null;
+
+    const lines = trimmed.split(/\r?\n/).filter(Boolean);
+    if (lines.length < 2) return null;
+
+    const delimiter = lines.some(l => l.includes('\t')) ? '\t' : (lines.some(l => l.includes(',')) ? ',' : null);
+    if (!delimiter) return null;
+
+    const rows = lines.map(line => line.split(delimiter).map(v => v.trim()));
+    const colCount = Math.max(...rows.map(r => r.length));
+    const normalized = rows.map(r => (r.length < colCount ? [...r, ...Array(colCount - r.length).fill('')] : r.slice(0, colCount)));
+    return normalized;
+}
+
+function extractMarkdownTables(md) {
+    const lines = (md || '').split(/\r?\n/);
+    const tables = [];
+
+    let buffer = [];
+    let inCodeBlock = false;
+    const isTableLine = (line) => /^\s*\|.*\|\s*$/.test(line) && (line.match(/\|/g) || []).length >= 2;
+    const isSeparatorRow = (row) => row.every(cell => /^:?-{3,}:?$/.test(cell.trim()) || cell.trim() === '');
+    const isMarkdownHeader = (line) => /^\s*#{1,6}\s+/.test(line.trim());
+
+    const flush = () => {
+        if (!buffer.length) return;
+        const rawRows = buffer
+            .map(l => l.trim())
+            .filter(Boolean)
+            .map(l => l.replace(/^\s*\|/, '').replace(/\|\s*$/, '').split('|').map(c => c.trim()));
+
+        if (rawRows.length < 2) {
+            buffer = [];
+            return;
+        }
+
+        // Remove separator row if present (usually second line)
+        const rows = [...rawRows];
+        if (rows[1] && isSeparatorRow(rows[1])) {
+            rows.splice(1, 1);
+        }
+
+        // Filter out any rows that have empty or invalid data
+        const validRows = rows.filter(row =>
+            row.length > 0 &&
+            row.some(cell => cell && cell.trim().length > 0)
+        );
+
+        if (validRows.length < 2) {
+            buffer = [];
+            return;
+        }
+
+        const colCount = Math.max(...validRows.map(r => r.length));
+        const normalized = validRows.map(r => (r.length < colCount ? [...r, ...Array(colCount - r.length).fill('')] : r.slice(0, colCount)));
+        tables.push(normalized);
+        buffer = [];
+    };
+
+    for (const line of lines) {
+        const trimmedLine = line.trim();
+
+        // Skip code blocks
+        if (/^```/.test(trimmedLine)) {
+            inCodeBlock = !inCodeBlock;
+            if (buffer.length > 0) {
+                flush();
+            }
+            continue;
+        }
+
+        // Skip markdown headers but don't flush buffer (tables can come after headers)
+        if (isMarkdownHeader(trimmedLine)) {
+            continue;
+        }
+
+        // Skip empty lines but don't flush (tables can have empty lines)
+        if (!trimmedLine) {
+            continue;
+        }
+
+        // Skip lines that are clearly not table content (but be more lenient)
+        if (trimmedLine.startsWith('[') && trimmedLine.includes('CREATE_DOCUMENT')) {
+            if (buffer.length > 0) {
+                flush();
+            }
+            continue;
+        }
+
+        // Skip acknowledgment lines
+        if (trimmedLine.startsWith('I\'ll') || trimmedLine.startsWith('Here') || trimmedLine.startsWith('Content')) {
+            if (buffer.length > 0) {
+                flush();
+            }
+            continue;
+        }
+
+        if (!inCodeBlock && isTableLine(line)) {
+            buffer.push(line);
+        } else {
+            // If we have a buffer and hit non-table line, flush it
+            if (buffer.length > 0 && !isTableLine(line)) {
+                flush();
+            }
+        }
+    }
+    flush();
+    return tables;
+}
+
+function sanitizeSheetName(name) {
+    const cleaned = (name || 'Sheet1')
+        .replace(/[\\/?*\[\]:]/g, ' ')
+        .trim();
+    return cleaned.slice(0, 31) || 'Sheet1';
+}
+
+function styleAsTable(worksheet, rowCount, colCount) {
+    if (rowCount <= 0 || colCount <= 0) return;
+
+    // Style header row
+    const header = worksheet.getRow(1);
+    header.font = {
+        bold: true,
+        color: { argb: 'FFFFFFFF' },
+        size: 12
+    };
+    header.alignment = {
+        vertical: 'middle',
+        horizontal: 'center',
+        wrapText: true
+    };
+    header.height = 25;
+
+    header.eachCell(cell => {
+        cell.fill = {
+            type: 'pattern',
+            pattern: 'solid',
+            fgColor: { argb: 'FF4472C4' }
+        };
+        cell.border = {
+            top: { style: 'thin', color: { argb: 'FF000000' } },
+            left: { style: 'thin', color: { argb: 'FF000000' } },
+            bottom: { style: 'medium', color: { argb: 'FF000000' } },
+            right: { style: 'thin', color: { argb: 'FF000000' } },
+        };
+    });
+
+    // Detect column types for proper formatting (numbers, currency, etc.)
+    const columnTypes = [];
+    for (let c = 1; c <= colCount; c++) {
+        const headerValue = worksheet.getRow(1).getCell(c).value?.toString().toLowerCase() || '';
+        let colType = 'text';
+
+        // Detect numeric/currency columns
+        if (headerValue.includes('price') || headerValue.includes('cost') || headerValue.includes('value') ||
+            headerValue.includes('total') || headerValue.includes('amount') || headerValue.includes('revenue')) {
+            colType = 'currency';
+        } else if (headerValue.includes('quantity') || headerValue.includes('qty') || headerValue.includes('count') ||
+            headerValue.includes('id') || headerValue.includes('number')) {
+            colType = 'number';
+        }
+        columnTypes.push(colType);
+    }
+
+    // Style data rows with alternating row colors for better readability
+    for (let r = 2; r <= rowCount; r++) {
+        const row = worksheet.getRow(r);
+        row.height = 20;
+
+        // Alternate row colors for better readability
+        const isEvenRow = r % 2 === 0;
+        const rowColor = isEvenRow ? 'FFF2F2F2' : 'FFFFFFFF';
+
+        row.eachCell({ includeEmpty: false }, (cell, colNumber) => {
+            const colType = columnTypes[colNumber - 1] || 'text';
+            const cellValue = cell.value;
+
+            // Apply formatting based on column type
+            if (colType === 'currency') {
+                // Try to parse as number and format as currency
+                const numValue = typeof cellValue === 'string' ? parseFloat(cellValue.replace(/[^0-9.-]/g, '')) : cellValue;
+                if (!isNaN(numValue) && numValue !== null) {
+                    cell.value = numValue;
+                    cell.numFmt = '$#,##0.00';
+                    cell.alignment = { vertical: 'middle', horizontal: 'right', wrapText: true };
+                } else {
+                    cell.alignment = { vertical: 'middle', horizontal: 'left', wrapText: true };
+                }
+            } else if (colType === 'number') {
+                // Try to parse as number
+                const numValue = typeof cellValue === 'string' ? parseFloat(cellValue.replace(/[^0-9.-]/g, '')) : cellValue;
+                if (!isNaN(numValue) && numValue !== null) {
+                    cell.value = numValue;
+                    cell.numFmt = '#,##0';
+                    cell.alignment = { vertical: 'middle', horizontal: 'right', wrapText: true };
+                } else {
+                    cell.alignment = { vertical: 'middle', horizontal: 'left', wrapText: true };
+                }
+            } else {
+                cell.alignment = { vertical: 'middle', horizontal: 'left', wrapText: true };
+            }
+
+            cell.fill = {
+                type: 'pattern',
+                pattern: 'solid',
+                fgColor: { argb: rowColor }
+            };
+            cell.border = {
+                top: { style: 'thin', color: { argb: 'FF000000' } },
+                left: { style: 'thin', color: { argb: 'FF000000' } },
+                bottom: { style: 'thin', color: { argb: 'FF000000' } },
+                right: { style: 'thin', color: { argb: 'FF000000' } },
+            };
+        });
+    }
+
+    // Column autosize with better calculation
+    for (let c = 1; c <= colCount; c++) {
+        let maxLen = 10;
+        for (let r = 1; r <= rowCount; r++) {
+            const v = worksheet.getRow(r).getCell(c).value;
+            const s = v == null ? '' : String(v);
+            maxLen = Math.max(maxLen, Math.min(60, s.length + 3));
+        }
+        worksheet.getColumn(c).width = maxLen;
+    }
+
+    // Freeze header row for better navigation
+    worksheet.views = [{ state: 'frozen', ySplit: 1 }];
+}
+
+async function createXlsx(filePath, content) {
+    const workbook = new ExcelJS.Workbook();
+    workbook.creator = 'OpenWebUI';
+    workbook.created = new Date();
+
+    const json = tryParseJson(content);
+    if (json && Array.isArray(json)) {
+        // Array of objects -> one sheet
+        const worksheet = workbook.addWorksheet('Sheet1');
+        const keys = Array.from(new Set(json.flatMap(obj => (obj && typeof obj === 'object' && !Array.isArray(obj)) ? Object.keys(obj) : [])));
+        worksheet.addRow(keys);
+        for (const item of json) {
+            const row = keys.map(k => {
+                const val = item?.[k];
+                return val == null ? '' : (typeof val === 'object' ? JSON.stringify(val) : val);
+            });
+            worksheet.addRow(row);
+        }
+        styleAsTable(worksheet, worksheet.rowCount, keys.length || 1);
+        await workbook.xlsx.writeFile(filePath);
+        return;
+    }
+
+    if (json && typeof json === 'object' && Array.isArray(json.sheets)) {
+        // { sheets: [{ name, data }] }
+        for (const [idx, sheet] of json.sheets.entries()) {
+            const name = sanitizeSheetName(sheet?.name || `Sheet${idx + 1}`);
+            const worksheet = workbook.addWorksheet(name);
+            const data = sheet?.data;
+
+            if (Array.isArray(data) && data.length && Array.isArray(data[0])) {
+                for (const r of data) worksheet.addRow(r);
+                styleAsTable(worksheet, worksheet.rowCount, (data[0] || []).length || 1);
+            } else if (Array.isArray(data) && data.length && typeof data[0] === 'object') {
+                const keys = Array.from(new Set(data.flatMap(obj => Object.keys(obj || {}))));
+                worksheet.addRow(keys);
+                for (const item of data) worksheet.addRow(keys.map(k => item?.[k] ?? ''));
+                styleAsTable(worksheet, worksheet.rowCount, keys.length || 1);
+            } else {
+                worksheet.addRow(['Content']);
+                worksheet.addRow([typeof data === 'string' ? data : JSON.stringify(data ?? '')]);
+                styleAsTable(worksheet, worksheet.rowCount, 1);
+            }
+        }
+        await workbook.xlsx.writeFile(filePath);
+        return;
+    }
+
+    const csvRows = parseCsvLike(content);
+    if (csvRows) {
+        const worksheet = workbook.addWorksheet('Sheet1');
+        for (const r of csvRows) worksheet.addRow(r);
+        styleAsTable(worksheet, worksheet.rowCount, (csvRows[0] || []).length || 1);
+        await workbook.xlsx.writeFile(filePath);
+        return;
+    }
+
+    const tables = extractMarkdownTables(content);
+    if (tables.length) {
+        tables.forEach((table, idx) => {
+            const worksheet = workbook.addWorksheet(`Table${idx + 1}`);
+            for (const r of table) worksheet.addRow(r);
+            styleAsTable(worksheet, worksheet.rowCount, (table[0] || []).length || 1);
+        });
+        await workbook.xlsx.writeFile(filePath);
+        return;
+    }
+
+    // Fallback: write content lines
+    const worksheet = workbook.addWorksheet('Sheet1');
+    worksheet.addRow(['Content']);
+    const lines = (content || '').split(/\r?\n/);
+    for (const line of lines) {
+        worksheet.addRow([line]);
+    }
+    styleAsTable(worksheet, worksheet.rowCount, 1);
+    await workbook.xlsx.writeFile(filePath);
+}
+
 async function createPdf(filePath, content) {
     const { marked } = await import('marked');
     const htmlContent = marked.parse(content);
@@ -354,6 +677,8 @@ async function createDocument(userId, filename, content) {
         await createDocx(filePath, content);
     } else if (extension === '.pdf') {
         await createPdf(filePath, content);
+    } else if (extension === '.xlsx') {
+        await createXlsx(filePath, content);
     } else {
         await fs.writeFile(filePath, content);
     }

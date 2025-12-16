@@ -3,6 +3,7 @@ const { body, validationResult } = require('express-validator');
 const { authenticateToken } = require('../middleware/auth');
 const prisma = require('../config/database');
 const XLSX = require('xlsx');
+const ExcelJS = require('exceljs');
 const fs = require('fs').promises;
 const path = require('path');
 const PptxGenJS = require('pptxgenjs');
@@ -202,29 +203,85 @@ router.post(
                 return res.status(400).json({ error: 'No tabular data found in message' });
             }
 
-            // Create Excel workbook
-            const wb = XLSX.utils.book_new();
-            const wsData = [tableData.headers, ...tableData.rows];
-            const ws = XLSX.utils.aoa_to_sheet(wsData);
+            // Create Excel workbook with ExcelJS for better formatting
+            const workbook = new ExcelJS.Workbook();
+            workbook.creator = 'AI Assistant';
+            workbook.created = new Date();
+
+            const worksheet = workbook.addWorksheet('AI Response Data');
+
+            // Add header row with formatting
+            const headerRow = worksheet.addRow(tableData.headers);
+            headerRow.font = {
+                bold: true,
+                color: { argb: 'FFFFFFFF' },
+                size: 12
+            };
+            headerRow.alignment = {
+                vertical: 'middle',
+                horizontal: 'center',
+                wrapText: true
+            };
+            headerRow.height = 25;
+
+            // Style header cells with blue background
+            headerRow.eachCell((cell, colNumber) => {
+                cell.fill = {
+                    type: 'pattern',
+                    pattern: 'solid',
+                    fgColor: { argb: 'FF4472C4' }
+                };
+                cell.border = {
+                    top: { style: 'thin', color: { argb: 'FF000000' } },
+                    left: { style: 'thin', color: { argb: 'FF000000' } },
+                    bottom: { style: 'thin', color: { argb: 'FF000000' } },
+                    right: { style: 'thin', color: { argb: 'FF000000' } },
+                };
+            });
+
+            // Add data rows with formatting
+            tableData.rows.forEach((row) => {
+                const dataRow = worksheet.addRow(row);
+                dataRow.alignment = {
+                    vertical: 'middle',
+                    horizontal: 'left',
+                    wrapText: true
+                };
+                dataRow.height = 20;
+
+                // Add borders to all cells
+                dataRow.eachCell((cell) => {
+                    cell.border = {
+                        top: { style: 'thin', color: { argb: 'FF000000' } },
+                        left: { style: 'thin', color: { argb: 'FF000000' } },
+                        bottom: { style: 'thin', color: { argb: 'FF000000' } },
+                        right: { style: 'thin', color: { argb: 'FF000000' } },
+                    };
+                });
+            });
 
             // Auto-size columns
-            const colWidths = tableData.headers.map((_, colIndex) => {
-                const maxLength = Math.max(
-                    tableData.headers[colIndex]?.length || 0,
-                    ...tableData.rows.map(row => row[colIndex]?.length || 0)
-                );
-                return { wch: Math.min(maxLength + 2, 50) };
+            tableData.headers.forEach((_, colIndex) => {
+                let maxLength = 10;
+                // Check header length
+                maxLength = Math.max(maxLength, (tableData.headers[colIndex] || '').length);
+                // Check all data rows
+                tableData.rows.forEach(row => {
+                    const cellValue = row[colIndex] || '';
+                    maxLength = Math.max(maxLength, String(cellValue).length);
+                });
+                worksheet.getColumn(colIndex + 1).width = Math.min(maxLength + 3, 60);
             });
-            ws['!cols'] = colWidths;
 
-            XLSX.utils.book_append_sheet(wb, ws, 'AI Response Data');
+            // Freeze header row
+            worksheet.views = [{ state: 'frozen', ySplit: 1 }];
 
             // Generate filename
             const timestamp = new Date().toISOString().slice(0, 19).replace(/:/g, '-');
             const finalFilename = filename || `ai-response-${timestamp}.xlsx`;
 
             // Write to buffer
-            const excelBuffer = XLSX.write(wb, { bookType: 'xlsx', type: 'buffer' });
+            const excelBuffer = await workbook.xlsx.writeBuffer();
 
             // Set headers for file download
             res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
