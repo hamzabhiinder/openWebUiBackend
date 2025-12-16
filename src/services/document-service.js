@@ -6,198 +6,17 @@ const { Document, Packer, Paragraph, HeadingLevel } = require('docx');
 const puppeteer = require('puppeteer');
 const PizZip = require('pizzip');
 const axios = require('axios');
-const XLSX = require('xlsx');
+const ExcelJS = require('exceljs');
 
-// Extract table data from markdown content
-function extractTableData(content) {
-    const lines = content.split('\n').filter(line => line.trim());
-    
-    // First priority: Look for markdown tables
-    const tableMatches = content.match(/\|(.+)\|\s*\n\|[-\s|:]+\|\s*\n((?:\|.+\|\s*\n?)+)/g);
-    if (tableMatches && tableMatches.length > 0) {
-        const tableMatch = tableMatches[0].match(/\|(.+)\|\s*\n\|[-\s|:]+\|\s*\n((?:\|.+\|\s*\n?)+)/);
-        if (tableMatch) {
-            const headers = tableMatch[1].split('|').map(h => h.trim()).filter(h => h);
-            const rows = tableMatch[2].split('\n')
-                .filter(row => row.trim() && row.includes('|'))
-                .map(row => row.split('|').map(cell => cell.trim()).filter(cell => cell));
-            
-            return { headers, rows };
-        }
-    }
-    
-    // Second priority: Look for derivative examples pattern
-    const examples = [];
-    let currentRule = '';
-    
-    for (let i = 0; i < lines.length; i++) {
-        const line = lines[i].trim();
-        
-        // Skip empty lines and intro text
-        if (!line || line.includes('Here are') || line.includes('Let me know')) {
-            continue;
-        }
-        
-        // Check for numbered rules (1. **Rule Name**)
-        const ruleMatch = line.match(/^\d+\.\s*\*\*([^*]+)\*\*/);
-        if (ruleMatch) {
-            currentRule = ruleMatch[1].trim();
-            continue;
-        }
-        
-        // Check for formula lines
-        if (line.includes('Formula:') && currentRule) {
-            const formulaText = line.replace('Formula:', '').trim();
-            examples.push({ rule: currentRule, formula: formulaText });
-            currentRule = '';
-        }
-    }
-    
-    if (examples.length >= 2) {
-        return {
-            headers: ['Rule', 'Formula'],
-            rows: examples.map(ex => [ex.rule, ex.formula])
-        };
-    }
-    
-    // Third priority: Look for key-value pairs or structured data
-    const structuredData = [];
-    const keyValuePattern = /^([^:]+):\s*(.+)$/;
-    
-    for (const line of lines) {
-        const match = line.match(keyValuePattern);
-        if (match && match[1].length < 50) { // Reasonable key length
-            structuredData.push([match[1].trim(), match[2].trim()]);
-        }
-    }
-    
-    if (structuredData.length >= 3) {
-        return {
-            headers: ['Property', 'Value'],
-            rows: structuredData
-        };
-    }
-    
-    // Fourth priority: If no structured data, create a summary from the content
-    const words = content.split(/\s+/).filter(word => word.length > 3);
-    const wordFreq = {};
-    words.forEach(word => {
-        const clean = word.toLowerCase().replace(/[^a-zA-Z0-9]/g, '');
-        if (clean.length > 3) {
-            wordFreq[clean] = (wordFreq[clean] || 0) + 1;
-        }
-    });
-    
-    const topWords = Object.entries(wordFreq)
-        .sort((a, b) => b[1] - a[1])
-        .slice(0, 10)
-        .map(([word, count]) => [word, count.toString()]);
-    
-    if (topWords.length > 0) {
-        return {
-            headers: ['Term', 'Frequency'],
-            rows: topWords
-        };
-    }
-    
-    return null;
-}
-
-async function createCsv(filePath, content) {
-    const tableData = extractTableData(content);
-    
-    if (!tableData) {
-        // If no table data, create a simple CSV with content summary
-        const lines = content.split('\n').filter(line => line.trim());
-        const csvContent = ['Section,Content'];
-        
-        lines.forEach((line, index) => {
-            if (line.trim()) {
-                const cleanLine = line.replace(/"/g, '""');
-                csvContent.push(`"Line ${index + 1}","${cleanLine}"`);
-            }
-        });
-        
-        await fs.writeFile(filePath, csvContent.join('\n'));
-        return;
-    }
-    
-    // Create CSV with table data
-    const csvRows = [
-        tableData.headers.map(h => `"${h.replace(/"/g, '""')}"`).join(','),
-        ...tableData.rows.map(row => 
-            row.map(cell => `"${cell.replace(/"/g, '""')}"`).join(',')
-        )
-    ];
-    
-    await fs.writeFile(filePath, csvRows.join('\n'));
-}
-
-async function createXlsx(filePath, content) {
-    const tableData = extractTableData(content);
-    
-    if (!tableData) {
-        // If no table data, create a simple Excel with content breakdown
-        const lines = content.split('\n').filter(line => line.trim());
-        const worksheetData = [
-            ['Section', 'Content'],
-            ...lines.map((line, index) => [`Line ${index + 1}`, line.trim()])
-        ];
-        
-        const wb = XLSX.utils.book_new();
-        const ws = XLSX.utils.aoa_to_sheet(worksheetData);
-        
-        // Auto-size columns
-        const colWidths = [
-            { wch: 15 }, // Section column
-            { wch: 80 }  // Content column
-        ];
-        ws['!cols'] = colWidths;
-        
-        XLSX.utils.book_append_sheet(wb, ws, 'Content');
-        await XLSX.writeFile(wb, filePath);
-        return;
-    }
-    
-    // Create Excel with table data
-    const worksheetData = [tableData.headers, ...tableData.rows];
-    const wb = XLSX.utils.book_new();
-    const ws = XLSX.utils.aoa_to_sheet(worksheetData);
-    
-    // Auto-size columns based on content
-    const colWidths = tableData.headers.map((header, colIndex) => {
-        const maxLength = Math.max(
-            header.length,
-            ...tableData.rows.map(row => (row[colIndex] || '').length)
-        );
-        return { wch: Math.min(maxLength + 2, 50) };
-    });
-    ws['!cols'] = colWidths;
-    
-    // Style headers
-    const headerRange = XLSX.utils.decode_range(ws['!ref']);
-    for (let col = headerRange.s.c; col <= headerRange.e.c; col++) {
-        const cellAddress = XLSX.utils.encode_cell({ r: 0, c: col });
-        if (ws[cellAddress]) {
-            ws[cellAddress].s = {
-                font: { bold: true },
-                fill: { fgColor: { rgb: '4472C4' } },
-                alignment: { horizontal: 'center' }
-            };
-        }
-    }
-    
-    XLSX.utils.book_append_sheet(wb, ws, 'Data');
-    await XLSX.writeFile(wb, filePath);
-}
 
 async function createDocx(filePath, content) {
     // --- Step 1: Extract and save base64 images ---
     const tempDir = path.join(__dirname, '../../uploads/temp');
     await fs.mkdir(tempDir, { recursive: true });
 
-    // const imageFiles = [];
-    // let imageCounter = 0;
+    // NOTE: Image extraction is currently disabled, but the cleanup path expects `imageFiles`.
+    // Keep this defined to avoid runtime ReferenceError.
+    const imageFiles = [];
 
     // Extract all images (base64 and URLs) and save them as files synchronously
     // const allImageMatches = Array.from(content.matchAll(/!\[([^\]]*)\]\(([^)]+)\)/g));
@@ -335,7 +154,7 @@ async function createDocx(filePath, content) {
     const tempMarkdownPath = filePath + '.md';
     await fs.writeFile(tempMarkdownPath, cleanedContent);
 
-    // --- Step 4: Create reference doc for Times New Roman font and default size 12pt ---
+    // --- Step 4: Create reference doc for Calibri font and nice base styles ---
     const referenceDoc = new Document({
         sections: [{
             children: [new Paragraph({ text: "Reference Document", heading: HeadingLevel.HEADING_1 })]
@@ -343,7 +162,7 @@ async function createDocx(filePath, content) {
         styles: {
             default: {
                 document: {
-                    run: { font: "Times New Roman", size: 24 }, // 24 half-points = 12pt (standard size)
+                    run: { font: "Calibri", size: 22 },
                     paragraph: { spacing: { line: 276, before: 10, after: 10 } }
                 }
             }
@@ -472,6 +291,305 @@ async function createDocx(filePath, content) {
     await fs.writeFile(filePath, modifiedBuffer);
 }
 
+function tryParseJson(content) {
+    try {
+        return JSON.parse(content);
+    } catch {
+        return null;
+    }
+}
+
+function parseCsvLike(content) {
+    const trimmed = (content || '').trim();
+    if (!trimmed) return null;
+
+    const lines = trimmed.split(/\r?\n/).filter(Boolean);
+    if (lines.length < 2) return null;
+
+    // ✅ CHANGE: Added Pipe '|' as a priority delimiter
+    let delimiter = null;
+    if (lines.some(l => l.includes('|'))) delimiter = '|';
+    else if (lines.some(l => l.includes('\t'))) delimiter = '\t';
+    else if (lines.some(l => l.includes(','))) delimiter = ',';
+
+    if (!delimiter) return null;
+
+    const rows = lines.map(line => {
+        let text = line.trim();
+        // Agar Pipe hai aur outer borders hain, unhe clean karo
+        if (delimiter === '|') {
+            if (text.startsWith('|')) text = text.substring(1);
+            if (text.endsWith('|')) text = text.substring(0, text.length - 1);
+        }
+        return text.split(delimiter).map(v => v.trim());
+    });
+
+    // Remove separator row (like ---|---) if it exists in CSV parsing mode
+    if (delimiter === '|' && rows.length > 1) {
+        const isSeparator = rows[1].every(cell => /^-+$/.test(cell) || cell === '');
+        if (isSeparator) rows.splice(1, 1);
+    }
+
+    const colCount = Math.max(...rows.map(r => r.length));
+    // Agar 1 hi column bana, to iska matlab parsing fail hui, null return karo taake fallback chale
+    if (colCount < 2) return null;
+
+    const normalized = rows.map(r => (r.length < colCount ? [...r, ...Array(colCount - r.length).fill('')] : r.slice(0, colCount)));
+    return normalized;
+}
+
+// Function to clean markdown formatting (bold, italics) from Excel cells
+function cleanCellText(text) {
+    if (!text) return "";
+    // Remove bold (** or __), italics (* or _), and code ticks (`)
+    return text.replace(/\*\*/g, '')
+        .replace(/__/g, '')
+        .replace(/\*/g, '')
+        .replace(/_/g, '')
+        .replace(/`/g, '')
+        .trim();
+}
+
+// ✅ NEW: Robust Table Extraction using 'marked' library
+async function extractMarkdownTables(md) {
+
+    const { marked } = await import('marked');
+
+    // Ensure GFM (GitHub Flavored Markdown) is enabled for Table support
+    if (typeof marked.use === 'function') {
+        marked.use({ gfm: true });
+    }
+
+    // Lexer markdown ko tokens mein convert kar deta hai (Table detection automatic hoti hai)
+    const tokens = marked.lexer(md || "");
+    const tables = [];
+
+    tokens.forEach(token => {
+        if (token.type === 'table') {
+            const tableData = [];
+
+            // 1. Headers extract karein
+            const headers = token.header.map(cell => {
+                // Cell token object ho sakta hai ya direct text
+                return cleanCellText(cell.text || cell.tokens?.map(t => t.text).join('') || String(cell));
+            });
+            tableData.push(headers);
+
+            // 2. Rows extract karein
+            token.rows.forEach(row => {
+                const rowData = row.map(cell => {
+                    return cleanCellText(cell.text || cell.tokens?.map(t => t.text).join('') || String(cell));
+                });
+                tableData.push(rowData);
+            });
+
+            if (tableData.length > 0) {
+                tables.push(tableData);
+            }
+        }
+    });
+
+    return tables;
+}
+
+function sanitizeSheetName(name) {
+    const cleaned = (name || 'Sheet1')
+        .replace(/[\\/?*\[\]:]/g, ' ')
+        .trim();
+    return cleaned.slice(0, 31) || 'Sheet1';
+}
+
+function styleAsTable(worksheet, rowCount, colCount) {
+    if (rowCount <= 0 || colCount <= 0) return;
+
+    // Style header row
+    const header = worksheet.getRow(1);
+    header.font = {
+        bold: true,
+        color: { argb: 'FFFFFFFF' },
+        size: 12
+    };
+    header.alignment = {
+        vertical: 'middle',
+        horizontal: 'center',
+        wrapText: true
+    };
+    header.height = 25;
+
+    header.eachCell(cell => {
+        cell.fill = {
+            type: 'pattern',
+            pattern: 'solid',
+            fgColor: { argb: 'FF4472C4' }
+        };
+        cell.border = {
+            top: { style: 'thin', color: { argb: 'FF000000' } },
+            left: { style: 'thin', color: { argb: 'FF000000' } },
+            bottom: { style: 'medium', color: { argb: 'FF000000' } },
+            right: { style: 'thin', color: { argb: 'FF000000' } },
+        };
+    });
+
+    // Detect column types for proper formatting (numbers, currency, etc.)
+    const columnTypes = [];
+    for (let c = 1; c <= colCount; c++) {
+        const headerValue = worksheet.getRow(1).getCell(c).value?.toString().toLowerCase() || '';
+        let colType = 'text';
+
+        // Detect numeric/currency columns
+        if (headerValue.includes('price') || headerValue.includes('cost') || headerValue.includes('value') ||
+            headerValue.includes('total') || headerValue.includes('amount') || headerValue.includes('revenue')) {
+            colType = 'currency';
+        } else if (headerValue.includes('quantity') || headerValue.includes('qty') || headerValue.includes('count') ||
+            headerValue.includes('id') || headerValue.includes('number')) {
+            colType = 'number';
+        }
+        columnTypes.push(colType);
+    }
+
+    // Style data rows with alternating row colors for better readability
+    for (let r = 2; r <= rowCount; r++) {
+        const row = worksheet.getRow(r);
+        row.height = 20;
+
+        // Alternate row colors for better readability
+        const isEvenRow = r % 2 === 0;
+        const rowColor = isEvenRow ? 'FFF2F2F2' : 'FFFFFFFF';
+
+        row.eachCell({ includeEmpty: false }, (cell, colNumber) => {
+            const colType = columnTypes[colNumber - 1] || 'text';
+            const cellValue = cell.value;
+
+            // Apply formatting based on column type
+            if (colType === 'currency') {
+                // Try to parse as number and format as currency
+                const numValue = typeof cellValue === 'string' ? parseFloat(cellValue.replace(/[^0-9.-]/g, '')) : cellValue;
+                if (!isNaN(numValue) && numValue !== null) {
+                    cell.value = numValue;
+                    cell.numFmt = '$#,##0.00';
+                    cell.alignment = { vertical: 'middle', horizontal: 'right', wrapText: true };
+                } else {
+                    cell.alignment = { vertical: 'middle', horizontal: 'left', wrapText: true };
+                }
+            } else if (colType === 'number') {
+                // Try to parse as number
+                const numValue = typeof cellValue === 'string' ? parseFloat(cellValue.replace(/[^0-9.-]/g, '')) : cellValue;
+                if (!isNaN(numValue) && numValue !== null) {
+                    cell.value = numValue;
+                    cell.numFmt = '#,##0';
+                    cell.alignment = { vertical: 'middle', horizontal: 'right', wrapText: true };
+                } else {
+                    cell.alignment = { vertical: 'middle', horizontal: 'left', wrapText: true };
+                }
+            } else {
+                cell.alignment = { vertical: 'middle', horizontal: 'left', wrapText: true };
+            }
+
+            cell.fill = {
+                type: 'pattern',
+                pattern: 'solid',
+                fgColor: { argb: rowColor }
+            };
+            cell.border = {
+                top: { style: 'thin', color: { argb: 'FF000000' } },
+                left: { style: 'thin', color: { argb: 'FF000000' } },
+                bottom: { style: 'thin', color: { argb: 'FF000000' } },
+                right: { style: 'thin', color: { argb: 'FF000000' } },
+            };
+        });
+    }
+
+    // Column autosize with better calculation
+    for (let c = 1; c <= colCount; c++) {
+        let maxLen = 10;
+        for (let r = 1; r <= rowCount; r++) {
+            const v = worksheet.getRow(r).getCell(c).value;
+            const s = v == null ? '' : String(v);
+            maxLen = Math.max(maxLen, Math.min(60, s.length + 3));
+        }
+        worksheet.getColumn(c).width = maxLen;
+    }
+
+    // Freeze header row for better navigation
+    worksheet.views = [{ state: 'frozen', ySplit: 1 }];
+}
+
+async function createXlsx(filePath, content) {
+    const workbook = new ExcelJS.Workbook();
+    workbook.creator = 'OpenWebUI';
+    workbook.created = new Date();
+
+    const json = tryParseJson(content);
+    if (json && Array.isArray(json)) {
+        const worksheet = workbook.addWorksheet('Sheet1');
+        const keys = Array.from(new Set(json.flatMap(obj => (obj && typeof obj === 'object' && !Array.isArray(obj)) ? Object.keys(obj) : [])));
+        worksheet.addRow(keys);
+        for (const item of json) {
+            const row = keys.map(k => {
+                const val = item?.[k];
+                return val == null ? '' : (typeof val === 'object' ? JSON.stringify(val) : val);
+            });
+            worksheet.addRow(row);
+        }
+        styleAsTable(worksheet, worksheet.rowCount, keys.length || 1);
+        await workbook.xlsx.writeFile(filePath);
+        return;
+    }
+
+    if (json && typeof json === 'object' && Array.isArray(json.sheets)) {
+        for (const [idx, sheet] of json.sheets.entries()) {
+            const name = sanitizeSheetName(sheet?.name || `Sheet${idx + 1}`);
+            const worksheet = workbook.addWorksheet(name);
+            const data = sheet?.data;
+
+            if (Array.isArray(data) && data.length && Array.isArray(data[0])) {
+                for (const r of data) worksheet.addRow(r);
+                styleAsTable(worksheet, worksheet.rowCount, (data[0] || []).length || 1);
+            } else if (Array.isArray(data) && data.length && typeof data[0] === 'object') {
+                const keys = Array.from(new Set(data.flatMap(obj => Object.keys(obj || {}))));
+                worksheet.addRow(keys);
+                for (const item of data) worksheet.addRow(keys.map(k => item?.[k] ?? ''));
+                styleAsTable(worksheet, worksheet.rowCount, keys.length || 1);
+            } else {
+                worksheet.addRow(['Content']);
+                worksheet.addRow([typeof data === 'string' ? data : JSON.stringify(data ?? '')]);
+                styleAsTable(worksheet, worksheet.rowCount, 1);
+            }
+        }
+        await workbook.xlsx.writeFile(filePath);
+        return;
+    }
+
+    const csvRows = parseCsvLike(content);
+    if (csvRows) {
+        const worksheet = workbook.addWorksheet('Sheet1');
+        for (const r of csvRows) worksheet.addRow(r);
+        styleAsTable(worksheet, worksheet.rowCount, (csvRows[0] || []).length || 1);
+        await workbook.xlsx.writeFile(filePath);
+        return;
+    }
+
+    const tables = await extractMarkdownTables(content);
+    if (tables.length > 0) {
+        tables.forEach((table, idx) => {
+            const worksheet = workbook.addWorksheet(`Table${idx + 1}`);
+            for (const r of table) worksheet.addRow(r);
+            styleAsTable(worksheet, worksheet.rowCount, (table[0] || []).length || 1);
+        });
+        await workbook.xlsx.writeFile(filePath);
+        return;
+    }
+
+    const worksheet = workbook.addWorksheet('Sheet1');
+    worksheet.addRow(['Content']);
+    const lines = (content || '').split(/\r?\n/);
+    for (const line of lines) {
+        worksheet.addRow([line]);
+    }
+    styleAsTable(worksheet, worksheet.rowCount, 1);
+    await workbook.xlsx.writeFile(filePath);
+}
+
 async function createPdf(filePath, content) {
     const { marked } = await import('marked');
     const htmlContent = marked.parse(content);
@@ -533,14 +651,10 @@ async function createDocument(userId, filename, content) {
 
     const extension = path.extname(safeFilename).toLowerCase();
 
-    console.log(`Creating document with extension: ${extension}`);
-
     if (extension === '.docx') {
         await createDocx(filePath, content);
     } else if (extension === '.pdf') {
         await createPdf(filePath, content);
-    } else if (extension === '.csv') {
-        await createCsv(filePath, content);
     } else if (extension === '.xlsx') {
         await createXlsx(filePath, content);
     } else {
@@ -552,5 +666,4 @@ async function createDocument(userId, filename, content) {
 
 module.exports = {
     createDocument,
-    extractTableData,
 };
