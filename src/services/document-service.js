@@ -306,56 +306,94 @@ function parseCsvLike(content) {
     const lines = trimmed.split(/\r?\n/).filter(Boolean);
     if (lines.length < 2) return null;
 
-    const delimiter = lines.some(l => l.includes('\t')) ? '\t' : (lines.some(l => l.includes(',')) ? ',' : null);
+    // ✅ CHANGE: Added Pipe '|' as a priority delimiter
+    let delimiter = null;
+    if (lines.some(l => l.includes('|'))) delimiter = '|';
+    else if (lines.some(l => l.includes('\t'))) delimiter = '\t';
+    else if (lines.some(l => l.includes(','))) delimiter = ',';
+
     if (!delimiter) return null;
 
-    const rows = lines.map(line => line.split(delimiter).map(v => v.trim()));
+    const rows = lines.map(line => {
+        let text = line.trim();
+        // Agar Pipe hai aur outer borders hain, unhe clean karo
+        if (delimiter === '|') {
+            if (text.startsWith('|')) text = text.substring(1);
+            if (text.endsWith('|')) text = text.substring(0, text.length - 1);
+        }
+        return text.split(delimiter).map(v => v.trim());
+    });
+
+    // Remove separator row (like ---|---) if it exists in CSV parsing mode
+    if (delimiter === '|' && rows.length > 1) {
+        const isSeparator = rows[1].every(cell => /^-+$/.test(cell) || cell === '');
+        if (isSeparator) rows.splice(1, 1);
+    }
+
     const colCount = Math.max(...rows.map(r => r.length));
+    // Agar 1 hi column bana, to iska matlab parsing fail hui, null return karo taake fallback chale
+    if (colCount < 2) return null;
+
     const normalized = rows.map(r => (r.length < colCount ? [...r, ...Array(colCount - r.length).fill('')] : r.slice(0, colCount)));
     return normalized;
 }
-
 function extractMarkdownTables(md) {
     const lines = (md || '').split(/\r?\n/);
     const tables = [];
 
     let buffer = [];
     let inCodeBlock = false;
-    const isTableLine = (line) => /^\s*\|.*\|\s*$/.test(line) && (line.match(/\|/g) || []).length >= 2;
-    const isSeparatorRow = (row) => row.every(cell => /^:?-{3,}:?$/.test(cell.trim()) || cell.trim() === '');
+
+    // ✅ CHANGE 1: Relaxed Regex. Sirf check karega ke line mein pipe '|' majood hai
+    const isTableLine = (line) => line.includes('|') && (line.match(/\|/g) || []).length >= 1;
+
+    // ✅ CHANGE 2: Separator check ko thoda flexible banaya
+    const isSeparatorRow = (row) => row.every(cell => /^:?-{2,}:?$/.test(cell.trim()) || cell.trim() === '');
+
     const isMarkdownHeader = (line) => /^\s*#{1,6}\s+/.test(line.trim());
 
     const flush = () => {
         if (!buffer.length) return;
+
+        // ✅ CHANGE 3: Split logic improved for rows without outer pipes
         const rawRows = buffer
             .map(l => l.trim())
             .filter(Boolean)
-            .map(l => l.replace(/^\s*\|/, '').replace(/\|\s*$/, '').split('|').map(c => c.trim()));
+            .map(l => {
+                // Agar start/end mein pipe hai to hata do, warna wese hi split karo
+                let content = l;
+                if (content.startsWith('|')) content = content.substring(1);
+                if (content.endsWith('|')) content = content.substring(0, content.length - 1);
+                return content.split('|').map(c => c.trim());
+            });
 
         if (rawRows.length < 2) {
             buffer = [];
             return;
         }
 
-        // Remove separator row if present (usually second line)
-        const rows = [...rawRows];
-        if (rows[1] && isSeparatorRow(rows[1])) {
-            rows.splice(1, 1);
+        // Check separator row (usually 2nd row)
+        // Grok kabhi kabhi separator row nahi deta, isliye strict check hata diya agar data valid lag raha ho
+        let hasSeparator = false;
+        if (rawRows[1] && isSeparatorRow(rawRows[1])) {
+            hasSeparator = true;
+            rawRows.splice(1, 1); // Remove separator
         }
 
-        // Filter out any rows that have empty or invalid data
-        const validRows = rows.filter(row =>
+        // Filter valid rows
+        const validRows = rawRows.filter(row =>
             row.length > 0 &&
             row.some(cell => cell && cell.trim().length > 0)
         );
 
-        if (validRows.length < 2) {
+        // Agar separator nahi tha, toh kam az kam 2 columns hone chahiye taake ye plain text na samjha jaye
+        const maxCols = Math.max(...validRows.map(r => r.length));
+        if (validRows.length < 2 || (maxCols < 2 && !hasSeparator)) {
             buffer = [];
             return;
         }
 
-        const colCount = Math.max(...validRows.map(r => r.length));
-        const normalized = validRows.map(r => (r.length < colCount ? [...r, ...Array(colCount - r.length).fill('')] : r.slice(0, colCount)));
+        const normalized = validRows.map(r => (r.length < maxCols ? [...r, ...Array(maxCols - r.length).fill('')] : r.slice(0, maxCols)));
         tables.push(normalized);
         buffer = [];
     };
@@ -363,48 +401,34 @@ function extractMarkdownTables(md) {
     for (const line of lines) {
         const trimmedLine = line.trim();
 
-        // Skip code blocks
         if (/^```/.test(trimmedLine)) {
             inCodeBlock = !inCodeBlock;
-            if (buffer.length > 0) {
-                flush();
-            }
+            if (buffer.length > 0) flush();
             continue;
         }
 
-        // Skip markdown headers but don't flush buffer (tables can come after headers)
         if (isMarkdownHeader(trimmedLine)) {
+            if (buffer.length > 0) flush();
             continue;
         }
 
-        // Skip empty lines but don't flush (tables can have empty lines)
-        if (!trimmedLine) {
-            continue;
-        }
+        if (!trimmedLine) continue;
 
-        // Skip lines that are clearly not table content (but be more lenient)
         if (trimmedLine.startsWith('[') && trimmedLine.includes('CREATE_DOCUMENT')) {
-            if (buffer.length > 0) {
-                flush();
-            }
+            if (buffer.length > 0) flush();
             continue;
         }
 
-        // Skip acknowledgment lines
+        // Ignore simple text lines usually found in chat
         if (trimmedLine.startsWith('I\'ll') || trimmedLine.startsWith('Here') || trimmedLine.startsWith('Content')) {
-            if (buffer.length > 0) {
-                flush();
-            }
+            if (buffer.length > 0) flush();
             continue;
         }
 
         if (!inCodeBlock && isTableLine(line)) {
             buffer.push(line);
         } else {
-            // If we have a buffer and hit non-table line, flush it
-            if (buffer.length > 0 && !isTableLine(line)) {
-                flush();
-            }
+            if (buffer.length > 0) flush();
         }
     }
     flush();
