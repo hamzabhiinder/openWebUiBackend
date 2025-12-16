@@ -337,101 +337,58 @@ function parseCsvLike(content) {
     const normalized = rows.map(r => (r.length < colCount ? [...r, ...Array(colCount - r.length).fill('')] : r.slice(0, colCount)));
     return normalized;
 }
-function extractMarkdownTables(md) {
-    const lines = (md || '').split(/\r?\n/);
+
+// Function to clean markdown formatting (bold, italics) from Excel cells
+function cleanCellText(text) {
+    if (!text) return "";
+    // Remove bold (** or __), italics (* or _), and code ticks (`)
+    return text.replace(/\*\*/g, '')
+        .replace(/__/g, '')
+        .replace(/\*/g, '')
+        .replace(/_/g, '')
+        .replace(/`/g, '')
+        .trim();
+}
+
+// ✅ NEW: Robust Table Extraction using 'marked' library
+async function extractMarkdownTables(md) {
+
+    const { marked } = await import('marked');
+
+    // Ensure GFM (GitHub Flavored Markdown) is enabled for Table support
+    if (typeof marked.use === 'function') {
+        marked.use({ gfm: true });
+    }
+
+    // Lexer markdown ko tokens mein convert kar deta hai (Table detection automatic hoti hai)
+    const tokens = marked.lexer(md || "");
     const tables = [];
 
-    let buffer = [];
-    let inCodeBlock = false;
+    tokens.forEach(token => {
+        if (token.type === 'table') {
+            const tableData = [];
 
-    // ✅ CHANGE 1: Relaxed Regex. Sirf check karega ke line mein pipe '|' majood hai
-    const isTableLine = (line) => line.includes('|') && (line.match(/\|/g) || []).length >= 1;
+            // 1. Headers extract karein
+            const headers = token.header.map(cell => {
+                // Cell token object ho sakta hai ya direct text
+                return cleanCellText(cell.text || cell.tokens?.map(t => t.text).join('') || String(cell));
+            });
+            tableData.push(headers);
 
-    // ✅ CHANGE 2: Separator check ko thoda flexible banaya
-    const isSeparatorRow = (row) => row.every(cell => /^:?-{2,}:?$/.test(cell.trim()) || cell.trim() === '');
-
-    const isMarkdownHeader = (line) => /^\s*#{1,6}\s+/.test(line.trim());
-
-    const flush = () => {
-        if (!buffer.length) return;
-
-        // ✅ CHANGE 3: Split logic improved for rows without outer pipes
-        const rawRows = buffer
-            .map(l => l.trim())
-            .filter(Boolean)
-            .map(l => {
-                // Agar start/end mein pipe hai to hata do, warna wese hi split karo
-                let content = l;
-                if (content.startsWith('|')) content = content.substring(1);
-                if (content.endsWith('|')) content = content.substring(0, content.length - 1);
-                return content.split('|').map(c => c.trim());
+            // 2. Rows extract karein
+            token.rows.forEach(row => {
+                const rowData = row.map(cell => {
+                    return cleanCellText(cell.text || cell.tokens?.map(t => t.text).join('') || String(cell));
+                });
+                tableData.push(rowData);
             });
 
-        if (rawRows.length < 2) {
-            buffer = [];
-            return;
+            if (tableData.length > 0) {
+                tables.push(tableData);
+            }
         }
+    });
 
-        // Check separator row (usually 2nd row)
-        // Grok kabhi kabhi separator row nahi deta, isliye strict check hata diya agar data valid lag raha ho
-        let hasSeparator = false;
-        if (rawRows[1] && isSeparatorRow(rawRows[1])) {
-            hasSeparator = true;
-            rawRows.splice(1, 1); // Remove separator
-        }
-
-        // Filter valid rows
-        const validRows = rawRows.filter(row =>
-            row.length > 0 &&
-            row.some(cell => cell && cell.trim().length > 0)
-        );
-
-        // Agar separator nahi tha, toh kam az kam 2 columns hone chahiye taake ye plain text na samjha jaye
-        const maxCols = Math.max(...validRows.map(r => r.length));
-        if (validRows.length < 2 || (maxCols < 2 && !hasSeparator)) {
-            buffer = [];
-            return;
-        }
-
-        const normalized = validRows.map(r => (r.length < maxCols ? [...r, ...Array(maxCols - r.length).fill('')] : r.slice(0, maxCols)));
-        tables.push(normalized);
-        buffer = [];
-    };
-
-    for (const line of lines) {
-        const trimmedLine = line.trim();
-
-        if (/^```/.test(trimmedLine)) {
-            inCodeBlock = !inCodeBlock;
-            if (buffer.length > 0) flush();
-            continue;
-        }
-
-        if (isMarkdownHeader(trimmedLine)) {
-            if (buffer.length > 0) flush();
-            continue;
-        }
-
-        if (!trimmedLine) continue;
-
-        if (trimmedLine.startsWith('[') && trimmedLine.includes('CREATE_DOCUMENT')) {
-            if (buffer.length > 0) flush();
-            continue;
-        }
-
-        // Ignore simple text lines usually found in chat
-        if (trimmedLine.startsWith('I\'ll') || trimmedLine.startsWith('Here') || trimmedLine.startsWith('Content')) {
-            if (buffer.length > 0) flush();
-            continue;
-        }
-
-        if (!inCodeBlock && isTableLine(line)) {
-            buffer.push(line);
-        } else {
-            if (buffer.length > 0) flush();
-        }
-    }
-    flush();
     return tables;
 }
 
@@ -564,7 +521,6 @@ async function createXlsx(filePath, content) {
 
     const json = tryParseJson(content);
     if (json && Array.isArray(json)) {
-        // Array of objects -> one sheet
         const worksheet = workbook.addWorksheet('Sheet1');
         const keys = Array.from(new Set(json.flatMap(obj => (obj && typeof obj === 'object' && !Array.isArray(obj)) ? Object.keys(obj) : [])));
         worksheet.addRow(keys);
@@ -581,7 +537,6 @@ async function createXlsx(filePath, content) {
     }
 
     if (json && typeof json === 'object' && Array.isArray(json.sheets)) {
-        // { sheets: [{ name, data }] }
         for (const [idx, sheet] of json.sheets.entries()) {
             const name = sanitizeSheetName(sheet?.name || `Sheet${idx + 1}`);
             const worksheet = workbook.addWorksheet(name);
@@ -614,8 +569,8 @@ async function createXlsx(filePath, content) {
         return;
     }
 
-    const tables = extractMarkdownTables(content);
-    if (tables.length) {
+    const tables = await extractMarkdownTables(content);
+    if (tables.length > 0) {
         tables.forEach((table, idx) => {
             const worksheet = workbook.addWorksheet(`Table${idx + 1}`);
             for (const r of table) worksheet.addRow(r);
@@ -625,7 +580,6 @@ async function createXlsx(filePath, content) {
         return;
     }
 
-    // Fallback: write content lines
     const worksheet = workbook.addWorksheet('Sheet1');
     worksheet.addRow(['Content']);
     const lines = (content || '').split(/\r?\n/);
