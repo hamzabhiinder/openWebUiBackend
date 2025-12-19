@@ -32,21 +32,13 @@ const authenticateToken = async (req, res, next) => {
 };
 
 const requireAdmin = (req, res, next) => {
-  if (!req.user || (!req.user.isAdmin && !req.user.isSuperAdmin)) {
+  if (!req.user || !req.user.isAdmin) {
     return res.status(403).json({ error: 'Admin access required' });
-  }
-  next();
-};
-
-const requireSuperAdmin = (req, res, next) => {
-  if (!req.user || !req.user.isSuperAdmin) {
-    return res.status(403).json({ error: 'Super admin access required' });
   }
   next();
 };
 
 module.exports = {
   authenticateToken,
-  requireAdmin,
-  requireSuperAdmin
+  requireAdmin
 };

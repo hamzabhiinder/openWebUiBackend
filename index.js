@@ -28,9 +28,9 @@ const apiProxyRoutes = require('./src/routes/api');
 const gmailRoutes = require('./src/routes/gmail');
 const spotifyRoutes = require('./src/routes/spotify');
 const figmaRoutes = require('./src/routes/figma');
-const excelRoutes = require('./src/routes/excel');
 const { router: computerUseRoutes, initializeWebSocketServer } = require('./src/routes/computer-use');
 const thesisRoutes = require('./src/routes/thesis');
+const onlyofficeRoutes = require('./src/routes/onlyoffice');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -134,9 +134,19 @@ app.use('/api/proxy', apiProxyRoutes);
 app.use('/api/gmail', gmailRoutes);
 app.use('/api/spotify', spotifyRoutes);
 app.use('/api/figma', figmaRoutes);
-app.use('/api/excel', excelRoutes);
 app.use('/api/computer-use', computerUseRoutes);
 app.use('/api/thesis', thesisRoutes);
+app.use('/api/onlyoffice', onlyofficeRoutes);
+
+// Simple message endpoint
+app.post('/api/simple-message', (req, res) => {
+    const { message } = req.body;
+    if (!message) {
+        return res.status(400).json({ error: 'Message is required' });
+    }
+    // You can handle/store the message here if needed
+    res.json({ status: 'success', received: message });
+});
 
 // Error handling middleware
 app.use((err, req, res, next) => {
@@ -157,6 +167,8 @@ app.use((err, req, res, next) => {
 app.use('*', (req, res) => {
     res.status(404).json({ error: 'Route not found' });
 });
+
+
 
 // Start server
 const server = app.listen(PORT, () => {

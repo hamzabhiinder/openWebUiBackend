@@ -85,19 +85,7 @@ async function countMonthlyApiCalls(userId) {
   return count;
 }
 
-async function saveChatAndTrackUsage(
-  userId,
-  chatId,
-  prompt,
-  fullResponseContent,
-  tokens,
-  model,
-  processedFiles,
-  assistantFiles = [],
-  regenerate = false,
-  persistedPrompt,
-  userMetadata
-) {
+async function saveChatAndTrackUsage(userId, chatId, prompt, fullResponseContent, tokens, model, processedFiles, assistantFiles = [], regenerate = false) {
   try {
     console.log("Background task: Saving to database...", { assistantFiles });
 
@@ -115,18 +103,13 @@ async function saveChatAndTrackUsage(
         return;
       }
 
-      const contentToPersist = (typeof persistedPrompt === 'string' && persistedPrompt.trim())
-        ? persistedPrompt
-        : prompt;
-
       if (!regenerate) {
         await prisma.message.create({
           data: {
             chatId,
             role: 'USER',
-            content: contentToPersist,
-            files: processedFiles.length > 0 ? JSON.stringify(processedFiles) : null,
-            metadata: (typeof userMetadata === 'string' && userMetadata.trim()) ? userMetadata : null,
+            content: prompt,
+            files: processedFiles.length > 0 ? JSON.stringify(processedFiles) : null
           }
         });
       }
@@ -146,7 +129,7 @@ async function saveChatAndTrackUsage(
         data: {
           updatedAt: new Date(),
           title: chat.title === 'New Chat'
-            ? contentToPersist.slice(0, 50) + (contentToPersist.length > 50 ? '...' : '')
+            ? prompt.slice(0, 50) + (prompt.length > 50 ? '...' : '')
             : chat.title
         }
       });
@@ -179,8 +162,6 @@ router.post(
 
     body('chatId').optional().isString(),
     body('files').optional().isArray(),
-    body('persistedPrompt').optional().isString(),
-    body('userMetadata').optional().isString(),
   ],
   authenticateToken,
   async (req, res) => {
@@ -210,7 +191,7 @@ router.post(
         return res.status(400).json({ errors: errors.array() });
       }
 
-      const { model, prompt, chatId, files, provider, regenerate, persistedPrompt, userMetadata } = req.body;
+      const { model, prompt, chatId, files, provider, regenerate } = req.body;
       const isAuth = !!req.user;
       const userId = isAuth ? req.user.id : null;
       const canPersist = isAuth && !!chatId;
@@ -368,29 +349,12 @@ router.post(
         customSystemPrompt += `
 
 **CRITICAL DOCUMENT CREATION RULES:**
-⚠️ ONLY create downloadable documents when the user EXPLICITLY requests a file format (Word, PDF, DOCX, Excel, etc.)
-
-**EXCEL FILE DATA GENERATION - CRITICAL REQUIREMENT - READ THIS CAREFULLY:**
-🚨 **ABSOLUTE RULE: NEVER generate only 3 rows or minimal examples for Excel files!** 🚨
-
-When creating Excel files, you MUST generate COMPREHENSIVE, DETAILED, and COMPLETE data:
-- **MANDATORY**: Generate ALL requested rows - if user asks for 50 items, generate ALL 50 rows DIRECTLY in the markdown table
-- **MANDATORY**: If user requests "inventory" or "list", generate AT LEAST 20-50+ rows with complete data DIRECTLY in the markdown table
-- **MANDATORY**: Include multiple columns (ID, Name, Quantity, Price, Total, Category, Supplier, Date, Description, etc.)
-- **MANDATORY**: Make data REALISTIC and VARIED - different values, categories, dates, amounts, descriptions
-- **FORBIDDEN**: NEVER generate only 3 rows, 5 rows, or minimal examples
-- **FORBIDDEN**: NEVER use phrases like "here are a few examples", "sample data", "This table will be continued", or "as many rows as you need" - generate COMPLETE data NOW
-- **FORBIDDEN**: NEVER say "This table will be continued" - you MUST include ALL rows in the markdown table immediately
-- **CRITICAL**: ALL data rows MUST be written directly in the markdown table format inside [CREATE_DOCUMENT] tags - do NOT write text saying "more rows will be added"
-- If user asks for "50 fruits" → Generate EXACTLY 50 complete rows DIRECTLY in the markdown table with all details (ID, Name, Quantity, Price, Total, Category, Supplier, Date, etc.)
-- If user asks for "inventory" → Generate 30-50+ rows DIRECTLY in the markdown table with varied products, quantities, prices, categories
-- If user asks for "list of X" → Generate the FULL comprehensive list with 20-50+ items DIRECTLY in the markdown table, not just 3-5 examples
-- **CRITICAL**: The markdown table inside [CREATE_DOCUMENT] must contain ALL the data rows written out completely - every single row must be in the table format, not mentioned in text
+⚠️ ONLY create downloadable documents when the user EXPLICITLY requests a file format (Word, PDF, DOCX, Excel, CSV, XLSX, etc.)
 
 **When to CREATE A DOCUMENT FILE:**
-- User explicitly says: "make a Word document", "create a PDF", "download as DOCX", "create an Excel file"
-- User says: "convert to Word/PDF/Excel", "export as document", "save as file"
-- User references file formats: ".docx", ".pdf", ".xlsx", "Word file", "PDF file", "Excel file"
+- User explicitly says: "make a Word document", "create a PDF", "download as DOCX", "create an Excel file", "generate CSV", "make XLSX"
+- User says: "convert to Word/PDF/Excel/CSV", "export as document/spreadsheet", "save as file"
+- User references file formats: ".docx", ".pdf", ".xlsx", ".csv", "Word file", "PDF file", "Excel file", "CSV file"
 
 **When to DISPLAY IN CHAT (DO NOT create document):**
 - User says: "show me", "create a table", "generate a list", "make a chart"
@@ -400,56 +364,19 @@ When creating Excel files, you MUST generate COMPREHENSIVE, DETAILED, and COMPLE
 **Document Creation Process (ONLY when file explicitly requested):**
 1. If user references previous content ("the information you gave me", "above data", etc.), extract that content from conversation history
 2. If user provides content in their current message, use that exact content
-3. **CRITICAL FOR EXCEL**: Do NOT show example data in your response text - put ALL complete data directly in [CREATE_DOCUMENT] tags
-4. Use markdown for structure (# for Heading 1, ## for Heading 2)
-4. For Excel files (.xlsx): ALWAYS use proper markdown table format with pipes (|) for columns
-   - Example: | Column 1 | Column 2 | Column 3 |
-   - Include header row and separator row: |---|---|
-   - Ensure all rows have the same number of columns
-   - Use clear, descriptive column headers
-   - For numeric columns (price, quantity, totals), use proper numbers (e.g., 1.00, 100, 150.00)
-   - **🚨 CRITICAL RULE: Generate COMPREHENSIVE and COMPLETE data - ABSOLUTELY NO minimal examples or samples!**
-   - **🚨 FORBIDDEN: NEVER generate only 3 rows, 5 rows, or "example" data - this is a CRITICAL ERROR**
-   - **🚨 FORBIDDEN: NEVER write "This table will be continued" or "as many rows as you need" - you MUST write ALL rows NOW in the markdown table**
-   - **🚨 MANDATORY: If user asks for "50 items" or specific quantity, generate EXACTLY that many rows DIRECTLY in the markdown table (50 rows, not 3!)**
-   - **🚨 MANDATORY: If user asks for "inventory" or "list", generate 30-50+ rows minimum DIRECTLY in the markdown table with complete data**
-   - **🚨 MANDATORY: Each row must have unique, realistic, varied data - different values, categories, descriptions**
-   - **🚨 MANDATORY: ALL rows must be written in the markdown table format - do NOT mention rows in text, write them in the table**
-   - If user asks for "50 items" or "inventory", generate ALL requested rows (50+ rows) DIRECTLY in the markdown table with complete, realistic data
-   - If user asks for "list of X", generate a FULL comprehensive list with 20-50+ items DIRECTLY in the markdown table, NEVER just 3-5 examples
-   - Make data realistic, varied, and useful - include different values, categories, descriptions, dates, amounts
-   - For inventory/sales data: include varied quantities, prices, categories, descriptions, suppliers, dates, locations
-   - For lists: include ALL requested items with complete information - generate substantial content DIRECTLY in the table
-   - **Minimum expectation: If user asks for N items, generate AT LEAST N rows (preferably all N, never less) - ALL in the markdown table**
-   - **Example: "50 fruits inventory" → Generate EXACTLY 50 complete rows DIRECTLY in markdown table with Fruit ID, Name, Quantity, Price, Total Value, Category, Supplier, Date, Description, etc.**
-   - **Example: "create Excel file with product list" → Generate 30-50+ rows DIRECTLY in markdown table with Product ID, Name, Category, Price, Stock, Supplier, Description, etc.**
-   - **CRITICAL: Write every single row in the markdown table format - do NOT write text saying "more rows will be added", write ALL rows in the table NOW**
-5. Wrap the ENTIRE document content in: [CREATE_DOCUMENT:filename.ext]...content...[/CREATE_DOCUMENT]
-   - **CRITICAL FOR EXCEL FILES**: ALL table rows MUST be written INSIDE the [CREATE_DOCUMENT] tags
-   - **FORBIDDEN**: Do NOT write table rows outside the tags and then say "more rows will be added"
-   - **FORBIDDEN**: Do NOT write "This table will be continued" or "as many rows as you need" - write ALL rows NOW inside the tags
-   - **MANDATORY**: Every single data row must be in the markdown table format INSIDE [CREATE_DOCUMENT] tags
-   - Example structure:
-     [CREATE_DOCUMENT:inventory.xlsx]
-     | ID | Name | Quantity | Price | Total |
-     |---|---|----------|-------|-------|
-     | 1 | Item 1 | 10 | 5.00 | 50.00 |
-     | 2 | Item 2 | 20 | 3.50 | 70.00 |
-     ... (ALL 50 rows must be here, not just 5!)
-     [/CREATE_DOCUMENT]
-6. Replace 'filename.ext' with appropriate filename (e.g., 'report.docx', 'summary.pdf', 'inventory.xlsx')
-7. Give brief acknowledgment: "I'll create a Document with the content" (but ALL data must already be in the tags)
+3. Use markdown for structure (# for Heading 1, ## for Heading 2)
+4. Wrap the ENTIRE document content in: [CREATE_DOCUMENT:filename.ext]...content...[/CREATE_DOCUMENT]
+5. Replace 'filename.ext' with appropriate filename (e.g., 'report.docx', 'summary.pdf', 'data.xlsx', 'export.csv')
+6. Give brief acknowledgment: "I'll create a Document with the content"
 
 **EXAMPLES:**
 ✅ CREATE FILE:
 - "Create a Word document with sales projections" → Generate Word file
 - "Make a PDF from the data above" → Generate PDF file
 - "Download this as a DOCX file" → Generate Word file
-- "Export this table to Excel" → Generate .xlsx file
-- "Create an Excel file for inventory with 50 fruits" → Generate properly formatted .xlsx file with EXACTLY ALL 50 fruits (50 rows), each with complete data (ID, Name, Quantity, Price, Total Value, Category, Supplier, Date, Description, etc.) - NOT just 3 rows!
-- "Make an Excel file with sales data" → Generate comprehensive sales data with 30-50+ rows minimum, varied products, dates, amounts, regions, customers, etc. - NOT just 3 rows!
-- "Create inventory Excel with 100 products" → Generate EXACTLY ALL 100 products (100 rows) with detailed information in each row - NOT just 3 rows!
-- "Create Excel file" → Generate 30-50+ rows with complete, realistic data - NEVER generate only 3 rows!
+- "Export to Excel spreadsheet" → Generate Excel file
+- "Create CSV file with the data" → Generate CSV file
+- "Make XLSX with financial data" → Generate Excel file
 
 ❌ DISPLAY IN CHAT:
 - "Create a sales projection table" → Display markdown table in chat
@@ -493,12 +420,12 @@ The derivative is: $f'(x) = -40x^{7} + 42x^{5} + 27x^{2} + 14$
 
 
 **CRITICAL DOCUMENT CREATION RULES:**
-⚠️ ONLY create downloadable documents when the user EXPLICITLY requests a file format (Word, PDF, DOCX, Excel, etc.)
+⚠️ ONLY create downloadable documents when the user EXPLICITLY requests a file format (Word, PDF, DOCX, Excel, CSV, XLSX, etc.)
 
 **When to CREATE A DOCUMENT FILE:**
-- User explicitly says: "make a Word document", "create a PDF", "download as DOCX", "create an Excel file"
-- User says: "convert to Word/PDF/Excel", "export as document", "save as file"
-- User references file formats: ".docx", ".pdf", ".xlsx", "Word file", "PDF file", "Excel file"
+- User explicitly says: "make a Word document", "create a PDF", "download as DOCX", "create an Excel file", "generate CSV", "make XLSX"
+- User says: "convert to Word/PDF/Excel/CSV", "export as document/spreadsheet", "save as file"
+- User references file formats: ".docx", ".pdf", ".xlsx", ".csv", "Word file", "PDF file", "Excel file", "CSV file"
 
 **When to DISPLAY IN CHAT (DO NOT create document):**
 - User says: "show me", "create a table", "generate a list", "make a chart"
@@ -508,56 +435,19 @@ The derivative is: $f'(x) = -40x^{7} + 42x^{5} + 27x^{2} + 14$
 **Document Creation Process (ONLY when file explicitly requested):**
 1. If user references previous content ("the information you gave me", "above data", etc.), extract that content from conversation history
 2. If user provides content in their current message, use that exact content
-3. **CRITICAL FOR EXCEL**: Do NOT show example data in your response text - put ALL complete data directly in [CREATE_DOCUMENT] tags
-4. Use markdown for structure (# for Heading 1, ## for Heading 2)
-4. For Excel files (.xlsx): ALWAYS use proper markdown table format with pipes (|) for columns
-   - Example: | Column 1 | Column 2 | Column 3 |
-   - Include header row and separator row: |---|---|
-   - Ensure all rows have the same number of columns
-   - Use clear, descriptive column headers
-   - For numeric columns (price, quantity, totals), use proper numbers (e.g., 1.00, 100, 150.00)
-   - **🚨 CRITICAL RULE: Generate COMPREHENSIVE and COMPLETE data - ABSOLUTELY NO minimal examples or samples!**
-   - **🚨 FORBIDDEN: NEVER generate only 3 rows, 5 rows, or "example" data - this is a CRITICAL ERROR**
-   - **🚨 FORBIDDEN: NEVER write "This table will be continued" or "as many rows as you need" - you MUST write ALL rows NOW in the markdown table**
-   - **🚨 MANDATORY: If user asks for "50 items" or specific quantity, generate EXACTLY that many rows DIRECTLY in the markdown table (50 rows, not 3!)**
-   - **🚨 MANDATORY: If user asks for "inventory" or "list", generate 30-50+ rows minimum DIRECTLY in the markdown table with complete data**
-   - **🚨 MANDATORY: Each row must have unique, realistic, varied data - different values, categories, descriptions**
-   - **🚨 MANDATORY: ALL rows must be written in the markdown table format - do NOT mention rows in text, write them in the table**
-   - If user asks for "50 items" or "inventory", generate ALL requested rows (50+ rows) DIRECTLY in the markdown table with complete, realistic data
-   - If user asks for "list of X", generate a FULL comprehensive list with 20-50+ items DIRECTLY in the markdown table, NEVER just 3-5 examples
-   - Make data realistic, varied, and useful - include different values, categories, descriptions, dates, amounts
-   - For inventory/sales data: include varied quantities, prices, categories, descriptions, suppliers, dates, locations
-   - For lists: include ALL requested items with complete information - generate substantial content DIRECTLY in the table
-   - **Minimum expectation: If user asks for N items, generate AT LEAST N rows (preferably all N, never less) - ALL in the markdown table**
-   - **Example: "50 fruits inventory" → Generate EXACTLY 50 complete rows DIRECTLY in markdown table with Fruit ID, Name, Quantity, Price, Total Value, Category, Supplier, Date, Description, etc.**
-   - **Example: "create Excel file with product list" → Generate 30-50+ rows DIRECTLY in markdown table with Product ID, Name, Category, Price, Stock, Supplier, Description, etc.**
-   - **CRITICAL: Write every single row in the markdown table format - do NOT write text saying "more rows will be added", write ALL rows in the table NOW**
-5. Wrap the ENTIRE document content in: [CREATE_DOCUMENT:filename.ext]...content...[/CREATE_DOCUMENT]
-   - **CRITICAL FOR EXCEL FILES**: ALL table rows MUST be written INSIDE the [CREATE_DOCUMENT] tags
-   - **FORBIDDEN**: Do NOT write table rows outside the tags and then say "more rows will be added"
-   - **FORBIDDEN**: Do NOT write "This table will be continued" or "as many rows as you need" - write ALL rows NOW inside the tags
-   - **MANDATORY**: Every single data row must be in the markdown table format INSIDE [CREATE_DOCUMENT] tags
-   - Example structure:
-     [CREATE_DOCUMENT:inventory.xlsx]
-     | ID | Name | Quantity | Price | Total |
-     |---|---|----------|-------|-------|
-     | 1 | Item 1 | 10 | 5.00 | 50.00 |
-     | 2 | Item 2 | 20 | 3.50 | 70.00 |
-     ... (ALL 50 rows must be here, not just 5!)
-     [/CREATE_DOCUMENT]
-6. Replace 'filename.ext' with appropriate filename (e.g., 'report.docx', 'summary.pdf', 'inventory.xlsx')
-7. Give brief acknowledgment: "I'll create a Document with the content" (but ALL data must already be in the tags)
+3. Use markdown for structure (# for Heading 1, ## for Heading 2)
+4. Wrap the ENTIRE document content in: [CREATE_DOCUMENT:filename.ext]...content...[/CREATE_DOCUMENT]
+5. Replace 'filename.ext' with appropriate filename (e.g., 'report.docx', 'summary.pdf', 'data.xlsx', 'export.csv')
+6. Give brief acknowledgment: "I'll create a Document with the content"
 
 **EXAMPLES:**
 ✅ CREATE FILE:
 - "Create a Word document with sales projections" → Generate Word file
 - "Make a PDF from the data above" → Generate PDF file
 - "Download this as a DOCX file" → Generate Word file
-- "Export this table to Excel" → Generate .xlsx file
-- "Create an Excel file for inventory with 50 fruits" → Generate properly formatted .xlsx file with EXACTLY ALL 50 fruits (50 rows), each with complete data (ID, Name, Quantity, Price, Total Value, Category, Supplier, Date, Description, etc.) - NOT just 3 rows!
-- "Make an Excel file with sales data" → Generate comprehensive sales data with 30-50+ rows minimum, varied products, dates, amounts, regions, customers, etc. - NOT just 3 rows!
-- "Create inventory Excel with 100 products" → Generate EXACTLY ALL 100 products (100 rows) with detailed information in each row - NOT just 3 rows!
-- "Create Excel file" → Generate 30-50+ rows with complete, realistic data - NEVER generate only 3 rows!
+- "Export to Excel spreadsheet" → Generate Excel file
+- "Create CSV file with the data" → Generate CSV file
+- "Make XLSX with financial data" → Generate Excel file
 
 ❌ DISPLAY IN CHAT:
 - "Create a sales projection table" → Display markdown table in chat
@@ -885,22 +775,10 @@ IMPORTANT: Default to displaying content in chat. Only create downloadable files
         }
 
 
-        await saveChatAndTrackUsage(
-          userId,
-          canPersist ? chatId : null,
-          prompt,
-          finalContent,
-          tokens,
-          actualModel,
-          processedFiles,
-          newFiles,
-          regenerate,
-          persistedPrompt,
-          userMetadata
-        );
+        await saveChatAndTrackUsage(userId, canPersist ? chatId : null, prompt, finalContent, tokens, actualModel, processedFiles, newFiles, regenerate);
       } else {
         // Handle non-authenticated user case if necessary
-        await saveChatAndTrackUsage(null, null, prompt, finalContent, tokens, actualModel, processedFiles, [], regenerate, persistedPrompt, userMetadata);
+        await saveChatAndTrackUsage(null, null, prompt, finalContent, tokens, actualModel, processedFiles, [], regenerate);
       }
 
     } catch (error) {
