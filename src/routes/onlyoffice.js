@@ -392,12 +392,12 @@ Return ONLY the replacement text, nothing else.`;
                 let apiKey = process.env.OPENAI_API_KEY;
                 let baseURL = undefined;
 
-                if (provider === 'Gemini' || provider === 'Google') {
+                if (provider === 'Gemini') {
                     apiKey = process.env.GEMINI_API_KEY;
                     baseURL = "https://generativelanguage.googleapis.com/v1beta/openai/";
-                } else if (provider === 'Anthropic' || provider === 'Claude') {
-                    apiKey = process.env.ANTHROPIC_API_KEY;
-                    baseURL = "https://api.anthropic.com/v1";
+                } else if (provider === 'OpenRouter'  ) {
+                    apiKey = process.env.OPENROUTER_API_KEY;
+                    baseURL = "https://openrouter.ai/api/v1";
                 }
 
                 const openai = new OpenAI({
@@ -407,19 +407,15 @@ Return ONLY the replacement text, nothing else.`;
 
                 // Map model name if needed
                 let modelName = model;
-                if (provider === 'Gemini' || provider === 'Google') {
+                if (provider === 'Gemini') {
                     // Map common model names to Gemini models
                     if (model.includes('gemini')) {
                         modelName = model;
                     } else {
                         modelName = 'gemini-2.0-flash-exp'; // Default Gemini model
                     }
-                } else if (provider === 'Anthropic' || provider === 'Claude') {
-                    if (model.includes('claude')) {
-                        modelName = model;
-                    } else {
-                        modelName = 'claude-3-5-sonnet-20241022'; // Default Claude model
-                    }
+                } else if (provider === 'OpenRouter') {
+                    modelName = model;
                 }
                 const completion = await openai.chat.completions.create({
                     model: modelName,
