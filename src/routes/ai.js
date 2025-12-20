@@ -85,19 +85,7 @@ async function countMonthlyApiCalls(userId) {
   return count;
 }
 
-async function saveChatAndTrackUsage(
-  userId,
-  chatId,
-  prompt,
-  fullResponseContent,
-  tokens,
-  model,
-  processedFiles,
-  assistantFiles = [],
-  regenerate = false,
-  persistedPrompt,
-  userMetadata
-) {
+async function saveChatAndTrackUsage(userId, chatId, prompt, fullResponseContent, tokens, model, processedFiles, assistantFiles = [], regenerate = false) {
   try {
     console.log("Background task: Saving to database...", { assistantFiles });
 
@@ -115,18 +103,13 @@ async function saveChatAndTrackUsage(
         return;
       }
 
-      const contentToPersist = (typeof persistedPrompt === 'string' && persistedPrompt.trim())
-        ? persistedPrompt
-        : prompt;
-
       if (!regenerate) {
         await prisma.message.create({
           data: {
             chatId,
             role: 'USER',
-            content: contentToPersist,
-            files: processedFiles.length > 0 ? JSON.stringify(processedFiles) : null,
-            metadata: (typeof userMetadata === 'string' && userMetadata.trim()) ? userMetadata : null,
+            content: prompt,
+            files: processedFiles.length > 0 ? JSON.stringify(processedFiles) : null
           }
         });
       }
@@ -146,7 +129,7 @@ async function saveChatAndTrackUsage(
         data: {
           updatedAt: new Date(),
           title: chat.title === 'New Chat'
-            ? contentToPersist.slice(0, 50) + (contentToPersist.length > 50 ? '...' : '')
+            ? prompt.slice(0, 50) + (prompt.length > 50 ? '...' : '')
             : chat.title
         }
       });
@@ -179,8 +162,6 @@ router.post(
 
     body('chatId').optional().isString(),
     body('files').optional().isArray(),
-    body('persistedPrompt').optional().isString(),
-    body('userMetadata').optional().isString(),
   ],
   authenticateToken,
   async (req, res) => {
@@ -210,7 +191,7 @@ router.post(
         return res.status(400).json({ errors: errors.array() });
       }
 
-      const { model, prompt, chatId, files, provider, regenerate, persistedPrompt, userMetadata } = req.body;
+      const { model, prompt, chatId, files, provider, regenerate } = req.body;
       const isAuth = !!req.user;
       const userId = isAuth ? req.user.id : null;
       const canPersist = isAuth && !!chatId;
@@ -368,29 +349,12 @@ router.post(
         customSystemPrompt += `
 
 **CRITICAL DOCUMENT CREATION RULES:**
-⚠️ ONLY create downloadable documents when the user EXPLICITLY requests a file format (Word, PDF, DOCX, Excel, etc.)
-
-**EXCEL FILE DATA GENERATION - CRITICAL REQUIREMENT - READ THIS CAREFULLY:**
-🚨 **ABSOLUTE RULE: NEVER generate only 3 rows or minimal examples for Excel files!** 🚨
-
-When creating Excel files, you MUST generate COMPREHENSIVE, DETAILED, and COMPLETE data:
-- **MANDATORY**: Generate ALL requested rows - if user asks for 50 items, generate ALL 50 rows DIRECTLY in the markdown table
-- **MANDATORY**: If user requests "inventory" or "list", generate AT LEAST 20-50+ rows with complete data DIRECTLY in the markdown table
-- **MANDATORY**: Include multiple columns (ID, Name, Quantity, Price, Total, Category, Supplier, Date, Description, etc.)
-- **MANDATORY**: Make data REALISTIC and VARIED - different values, categories, dates, amounts, descriptions
-- **FORBIDDEN**: NEVER generate only 3 rows, 5 rows, or minimal examples
-- **FORBIDDEN**: NEVER use phrases like "here are a few examples", "sample data", "This table will be continued", or "as many rows as you need" - generate COMPLETE data NOW
-- **FORBIDDEN**: NEVER say "This table will be continued" - you MUST include ALL rows in the markdown table immediately
-- **CRITICAL**: ALL data rows MUST be written directly in the markdown table format inside [CREATE_DOCUMENT] tags - do NOT write text saying "more rows will be added"
-- If user asks for "50 fruits" → Generate EXACTLY 50 complete rows DIRECTLY in the markdown table with all details (ID, Name, Quantity, Price, Total, Category, Supplier, Date, etc.)
-- If user asks for "inventory" → Generate 30-50+ rows DIRECTLY in the markdown table with varied products, quantities, prices, categories
-- If user asks for "list of X" → Generate the FULL comprehensive list with 20-50+ items DIRECTLY in the markdown table, not just 3-5 examples
-- **CRITICAL**: The markdown table inside [CREATE_DOCUMENT] must contain ALL the data rows written out completely - every single row must be in the table format, not mentioned in text
+⚠️ ONLY create downloadable documents when the user EXPLICITLY requests a file format (Word, PDF, DOCX, etc.)
 
 **When to CREATE A DOCUMENT FILE:**
-- User explicitly says: "make a Word document", "create a PDF", "download as DOCX", "create an Excel file"
-- User says: "convert to Word/PDF/Excel", "export as document", "save as file"
-- User references file formats: ".docx", ".pdf", ".xlsx", "Word file", "PDF file", "Excel file"
+- User explicitly says: "make a Word document", "create a PDF", "download as DOCX"
+- User says: "convert to Word/PDF", "export as document", "save as file"
+- User references file formats: ".docx", ".pdf", "Word file", "PDF file"
 
 **When to DISPLAY IN CHAT (DO NOT create document):**
 - User says: "show me", "create a table", "generate a list", "make a chart"
@@ -400,56 +364,16 @@ When creating Excel files, you MUST generate COMPREHENSIVE, DETAILED, and COMPLE
 **Document Creation Process (ONLY when file explicitly requested):**
 1. If user references previous content ("the information you gave me", "above data", etc.), extract that content from conversation history
 2. If user provides content in their current message, use that exact content
-3. **CRITICAL FOR EXCEL**: Do NOT show example data in your response text - put ALL complete data directly in [CREATE_DOCUMENT] tags
-4. Use markdown for structure (# for Heading 1, ## for Heading 2)
-4. For Excel files (.xlsx): ALWAYS use proper markdown table format with pipes (|) for columns
-   - Example: | Column 1 | Column 2 | Column 3 |
-   - Include header row and separator row: |---|---|
-   - Ensure all rows have the same number of columns
-   - Use clear, descriptive column headers
-   - For numeric columns (price, quantity, totals), use proper numbers (e.g., 1.00, 100, 150.00)
-   - **🚨 CRITICAL RULE: Generate COMPREHENSIVE and COMPLETE data - ABSOLUTELY NO minimal examples or samples!**
-   - **🚨 FORBIDDEN: NEVER generate only 3 rows, 5 rows, or "example" data - this is a CRITICAL ERROR**
-   - **🚨 FORBIDDEN: NEVER write "This table will be continued" or "as many rows as you need" - you MUST write ALL rows NOW in the markdown table**
-   - **🚨 MANDATORY: If user asks for "50 items" or specific quantity, generate EXACTLY that many rows DIRECTLY in the markdown table (50 rows, not 3!)**
-   - **🚨 MANDATORY: If user asks for "inventory" or "list", generate 30-50+ rows minimum DIRECTLY in the markdown table with complete data**
-   - **🚨 MANDATORY: Each row must have unique, realistic, varied data - different values, categories, descriptions**
-   - **🚨 MANDATORY: ALL rows must be written in the markdown table format - do NOT mention rows in text, write them in the table**
-   - If user asks for "50 items" or "inventory", generate ALL requested rows (50+ rows) DIRECTLY in the markdown table with complete, realistic data
-   - If user asks for "list of X", generate a FULL comprehensive list with 20-50+ items DIRECTLY in the markdown table, NEVER just 3-5 examples
-   - Make data realistic, varied, and useful - include different values, categories, descriptions, dates, amounts
-   - For inventory/sales data: include varied quantities, prices, categories, descriptions, suppliers, dates, locations
-   - For lists: include ALL requested items with complete information - generate substantial content DIRECTLY in the table
-   - **Minimum expectation: If user asks for N items, generate AT LEAST N rows (preferably all N, never less) - ALL in the markdown table**
-   - **Example: "50 fruits inventory" → Generate EXACTLY 50 complete rows DIRECTLY in markdown table with Fruit ID, Name, Quantity, Price, Total Value, Category, Supplier, Date, Description, etc.**
-   - **Example: "create Excel file with product list" → Generate 30-50+ rows DIRECTLY in markdown table with Product ID, Name, Category, Price, Stock, Supplier, Description, etc.**
-   - **CRITICAL: Write every single row in the markdown table format - do NOT write text saying "more rows will be added", write ALL rows in the table NOW**
-5. Wrap the ENTIRE document content in: [CREATE_DOCUMENT:filename.ext]...content...[/CREATE_DOCUMENT]
-   - **CRITICAL FOR EXCEL FILES**: ALL table rows MUST be written INSIDE the [CREATE_DOCUMENT] tags
-   - **FORBIDDEN**: Do NOT write table rows outside the tags and then say "more rows will be added"
-   - **FORBIDDEN**: Do NOT write "This table will be continued" or "as many rows as you need" - write ALL rows NOW inside the tags
-   - **MANDATORY**: Every single data row must be in the markdown table format INSIDE [CREATE_DOCUMENT] tags
-   - Example structure:
-     [CREATE_DOCUMENT:inventory.xlsx]
-     | ID | Name | Quantity | Price | Total |
-     |---|---|----------|-------|-------|
-     | 1 | Item 1 | 10 | 5.00 | 50.00 |
-     | 2 | Item 2 | 20 | 3.50 | 70.00 |
-     ... (ALL 50 rows must be here, not just 5!)
-     [/CREATE_DOCUMENT]
-6. Replace 'filename.ext' with appropriate filename (e.g., 'report.docx', 'summary.pdf', 'inventory.xlsx')
-7. Give brief acknowledgment: "I'll create a Document with the content" (but ALL data must already be in the tags)
+3. Use markdown for structure (# for Heading 1, ## for Heading 2)
+4. Wrap the ENTIRE document content in: [CREATE_DOCUMENT:filename.ext]...content...[/CREATE_DOCUMENT]
+5. Replace 'filename.ext' with appropriate filename (e.g., 'report.docx', 'summary.pdf')
+6. Give brief acknowledgment: "I'll create a Document with the content"
 
 **EXAMPLES:**
 ✅ CREATE FILE:
 - "Create a Word document with sales projections" → Generate Word file
 - "Make a PDF from the data above" → Generate PDF file
 - "Download this as a DOCX file" → Generate Word file
-- "Export this table to Excel" → Generate .xlsx file
-- "Create an Excel file for inventory with 50 fruits" → Generate properly formatted .xlsx file with EXACTLY ALL 50 fruits (50 rows), each with complete data (ID, Name, Quantity, Price, Total Value, Category, Supplier, Date, Description, etc.) - NOT just 3 rows!
-- "Make an Excel file with sales data" → Generate comprehensive sales data with 30-50+ rows minimum, varied products, dates, amounts, regions, customers, etc. - NOT just 3 rows!
-- "Create inventory Excel with 100 products" → Generate EXACTLY ALL 100 products (100 rows) with detailed information in each row - NOT just 3 rows!
-- "Create Excel file" → Generate 30-50+ rows with complete, realistic data - NEVER generate only 3 rows!
 
 ❌ DISPLAY IN CHAT:
 - "Create a sales projection table" → Display markdown table in chat
@@ -493,12 +417,12 @@ The derivative is: $f'(x) = -40x^{7} + 42x^{5} + 27x^{2} + 14$
 
 
 **CRITICAL DOCUMENT CREATION RULES:**
-⚠️ ONLY create downloadable documents when the user EXPLICITLY requests a file format (Word, PDF, DOCX, Excel, etc.)
+⚠️ ONLY create downloadable documents when the user EXPLICITLY requests a file format (Word, PDF, DOCX, etc.)
 
 **When to CREATE A DOCUMENT FILE:**
-- User explicitly says: "make a Word document", "create a PDF", "download as DOCX", "create an Excel file"
-- User says: "convert to Word/PDF/Excel", "export as document", "save as file"
-- User references file formats: ".docx", ".pdf", ".xlsx", "Word file", "PDF file", "Excel file"
+- User explicitly says: "make a Word document", "create a PDF", "download as DOCX"
+- User says: "convert to Word/PDF", "export as document", "save as file"
+- User references file formats: ".docx", ".pdf", "Word file", "PDF file"
 
 **When to DISPLAY IN CHAT (DO NOT create document):**
 - User says: "show me", "create a table", "generate a list", "make a chart"
@@ -508,56 +432,16 @@ The derivative is: $f'(x) = -40x^{7} + 42x^{5} + 27x^{2} + 14$
 **Document Creation Process (ONLY when file explicitly requested):**
 1. If user references previous content ("the information you gave me", "above data", etc.), extract that content from conversation history
 2. If user provides content in their current message, use that exact content
-3. **CRITICAL FOR EXCEL**: Do NOT show example data in your response text - put ALL complete data directly in [CREATE_DOCUMENT] tags
-4. Use markdown for structure (# for Heading 1, ## for Heading 2)
-4. For Excel files (.xlsx): ALWAYS use proper markdown table format with pipes (|) for columns
-   - Example: | Column 1 | Column 2 | Column 3 |
-   - Include header row and separator row: |---|---|
-   - Ensure all rows have the same number of columns
-   - Use clear, descriptive column headers
-   - For numeric columns (price, quantity, totals), use proper numbers (e.g., 1.00, 100, 150.00)
-   - **🚨 CRITICAL RULE: Generate COMPREHENSIVE and COMPLETE data - ABSOLUTELY NO minimal examples or samples!**
-   - **🚨 FORBIDDEN: NEVER generate only 3 rows, 5 rows, or "example" data - this is a CRITICAL ERROR**
-   - **🚨 FORBIDDEN: NEVER write "This table will be continued" or "as many rows as you need" - you MUST write ALL rows NOW in the markdown table**
-   - **🚨 MANDATORY: If user asks for "50 items" or specific quantity, generate EXACTLY that many rows DIRECTLY in the markdown table (50 rows, not 3!)**
-   - **🚨 MANDATORY: If user asks for "inventory" or "list", generate 30-50+ rows minimum DIRECTLY in the markdown table with complete data**
-   - **🚨 MANDATORY: Each row must have unique, realistic, varied data - different values, categories, descriptions**
-   - **🚨 MANDATORY: ALL rows must be written in the markdown table format - do NOT mention rows in text, write them in the table**
-   - If user asks for "50 items" or "inventory", generate ALL requested rows (50+ rows) DIRECTLY in the markdown table with complete, realistic data
-   - If user asks for "list of X", generate a FULL comprehensive list with 20-50+ items DIRECTLY in the markdown table, NEVER just 3-5 examples
-   - Make data realistic, varied, and useful - include different values, categories, descriptions, dates, amounts
-   - For inventory/sales data: include varied quantities, prices, categories, descriptions, suppliers, dates, locations
-   - For lists: include ALL requested items with complete information - generate substantial content DIRECTLY in the table
-   - **Minimum expectation: If user asks for N items, generate AT LEAST N rows (preferably all N, never less) - ALL in the markdown table**
-   - **Example: "50 fruits inventory" → Generate EXACTLY 50 complete rows DIRECTLY in markdown table with Fruit ID, Name, Quantity, Price, Total Value, Category, Supplier, Date, Description, etc.**
-   - **Example: "create Excel file with product list" → Generate 30-50+ rows DIRECTLY in markdown table with Product ID, Name, Category, Price, Stock, Supplier, Description, etc.**
-   - **CRITICAL: Write every single row in the markdown table format - do NOT write text saying "more rows will be added", write ALL rows in the table NOW**
-5. Wrap the ENTIRE document content in: [CREATE_DOCUMENT:filename.ext]...content...[/CREATE_DOCUMENT]
-   - **CRITICAL FOR EXCEL FILES**: ALL table rows MUST be written INSIDE the [CREATE_DOCUMENT] tags
-   - **FORBIDDEN**: Do NOT write table rows outside the tags and then say "more rows will be added"
-   - **FORBIDDEN**: Do NOT write "This table will be continued" or "as many rows as you need" - write ALL rows NOW inside the tags
-   - **MANDATORY**: Every single data row must be in the markdown table format INSIDE [CREATE_DOCUMENT] tags
-   - Example structure:
-     [CREATE_DOCUMENT:inventory.xlsx]
-     | ID | Name | Quantity | Price | Total |
-     |---|---|----------|-------|-------|
-     | 1 | Item 1 | 10 | 5.00 | 50.00 |
-     | 2 | Item 2 | 20 | 3.50 | 70.00 |
-     ... (ALL 50 rows must be here, not just 5!)
-     [/CREATE_DOCUMENT]
-6. Replace 'filename.ext' with appropriate filename (e.g., 'report.docx', 'summary.pdf', 'inventory.xlsx')
-7. Give brief acknowledgment: "I'll create a Document with the content" (but ALL data must already be in the tags)
+3. Use markdown for structure (# for Heading 1, ## for Heading 2)
+4. Wrap the ENTIRE document content in: [CREATE_DOCUMENT:filename.ext]...content...[/CREATE_DOCUMENT]
+5. Replace 'filename.ext' with appropriate filename (e.g., 'report.docx', 'summary.pdf')
+6. Give brief acknowledgment: "I'll create a Document with the content"
 
 **EXAMPLES:**
 ✅ CREATE FILE:
 - "Create a Word document with sales projections" → Generate Word file
 - "Make a PDF from the data above" → Generate PDF file
 - "Download this as a DOCX file" → Generate Word file
-- "Export this table to Excel" → Generate .xlsx file
-- "Create an Excel file for inventory with 50 fruits" → Generate properly formatted .xlsx file with EXACTLY ALL 50 fruits (50 rows), each with complete data (ID, Name, Quantity, Price, Total Value, Category, Supplier, Date, Description, etc.) - NOT just 3 rows!
-- "Make an Excel file with sales data" → Generate comprehensive sales data with 30-50+ rows minimum, varied products, dates, amounts, regions, customers, etc. - NOT just 3 rows!
-- "Create inventory Excel with 100 products" → Generate EXACTLY ALL 100 products (100 rows) with detailed information in each row - NOT just 3 rows!
-- "Create Excel file" → Generate 30-50+ rows with complete, realistic data - NEVER generate only 3 rows!
 
 ❌ DISPLAY IN CHAT:
 - "Create a sales projection table" → Display markdown table in chat
@@ -885,22 +769,10 @@ IMPORTANT: Default to displaying content in chat. Only create downloadable files
         }
 
 
-        await saveChatAndTrackUsage(
-          userId,
-          canPersist ? chatId : null,
-          prompt,
-          finalContent,
-          tokens,
-          actualModel,
-          processedFiles,
-          newFiles,
-          regenerate,
-          persistedPrompt,
-          userMetadata
-        );
+        await saveChatAndTrackUsage(userId, canPersist ? chatId : null, prompt, finalContent, tokens, actualModel, processedFiles, newFiles, regenerate);
       } else {
         // Handle non-authenticated user case if necessary
-        await saveChatAndTrackUsage(null, null, prompt, finalContent, tokens, actualModel, processedFiles, [], regenerate, persistedPrompt, userMetadata);
+        await saveChatAndTrackUsage(null, null, prompt, finalContent, tokens, actualModel, processedFiles, [], regenerate);
       }
 
     } catch (error) {
@@ -3503,6 +3375,233 @@ router.post(
     } catch (error) {
       console.error('Chart generation error:', error);
       res.status(500).json({ error: error.message || 'Chart generation failed' });
+    }
+  }
+);
+
+// ✅ Generate Word Document Content - Specialized endpoint for Word Connector
+router.post(
+  '/generate-word',
+  [
+    body('model').trim().notEmpty().withMessage('Model is required'),
+    body('prompt').trim().notEmpty().withMessage('Prompt is required'),
+    body('provider').trim().notEmpty().withMessage('Provider is required'),
+    body('chatId').optional().isString(),
+    body('files').optional().isArray(),
+    body('streamId').optional().isString(),
+  ],
+  authenticateToken,
+  async (req, res) => {
+    const controller = new AbortController();
+    const signal = controller.signal;
+    const { streamId } = req.body;
+
+    if (streamId) {
+      streamControllers.set(streamId, controller);
+      console.log(`Word Document Stream registered with ID: ${streamId}`);
+    }
+
+    req.on('close', () => {
+      console.log(`Client connection closed for Word document chat: ${req.body.chatId}. Aborting generation.`);
+      controller.abort();
+    });
+    req.on('aborted', () => {
+      console.log(`Client request aborted for Word document chat: ${req.body.chatId}. Aborting generation.`);
+      controller.abort();
+    });
+
+    try {
+      const errors = validationResult(req);
+      if (!errors.isEmpty()) {
+        controller.abort();
+        return res.status(400).json({ errors: errors.array() });
+      }
+
+      const { prompt, chatId, provider = 'OpenAI', model = 'gpt-4o', files } = req.body;
+      const userId = req.user.id;
+
+      console.log('📄 Word Document generation request:', { prompt, chatId, provider, model, hasFiles: !!files?.length });
+
+      // Check monthly limit
+      if (req.user.plan === 'FREE') {
+        const result = await prisma.user.updateMany({
+          where: {
+            id: userId,
+            monthlyCallLimit: { gt: 0 }
+          },
+          data: {
+            monthlyCallLimit: { decrement: 1 }
+          }
+        });
+
+        if (!result || result.count === 0) {
+          return res.status(429).json({
+            error: 'Free monthly queries exhausted. Please upgrade to continue.',
+            remaining: 0
+          });
+        }
+      } else {
+        if (req.user.apiUsage >= req.user.monthlyLimit) {
+          return res.status(429).json({
+            error: 'Monthly API limit exceeded',
+            usage: { current: req.user.apiUsage, limit: req.user.monthlyLimit },
+          });
+        }
+      }
+
+      // Verify chat exists and belongs to user
+      let chat = null;
+      if (chatId) {
+        chat = await prisma.chat.findUnique({ where: { id: chatId } });
+        if (chat && chat.userId !== userId) {
+          return res.status(404).json({ error: 'Chat not found or access denied.' });
+        }
+      }
+
+      // Process attached files
+      let processedFiles = [];
+      if (files && files.length > 0) {
+        processedFiles = await Promise.all(
+          files.map(async (fileId) => {
+            const file = await prisma.file.findFirst({
+              where: { id: fileId, userId }
+            });
+            return file ? {
+              id: file.id,
+              name: file.originalName,
+              extractedText: file.extractedText,
+              mimeType: file.mimeType,
+              path: file.path
+            } : null;
+          })
+        ).then(results => results.filter(Boolean));
+      }
+
+      // Set up streaming response
+      res.setHeader('Content-Type', 'text/event-stream');
+      res.setHeader('Cache-Control', 'no-cache');
+      res.setHeader('Connection', 'keep-alive');
+
+      // Build messages for Word document generation
+      const messages = [];
+
+      // System message specifically for Word document generation
+      const wordSystemMessage = `You are an expert document writer specializing in creating professional Word documents. Your task is to generate well-structured, formatted content that will be displayed in a rich text editor.
+
+CRITICAL REQUIREMENTS:
+1. Return content in clean HTML format suitable for a rich text editor (Tiptap)
+2. Use proper HTML tags: <h1>, <h2>, <h3> for headings, <p> for paragraphs, <ul>/<ol> for lists, <strong> for bold, <em> for italic
+3. Do NOT include markdown syntax (no #, *, -, etc.)
+4. Do NOT include code blocks or backticks
+5. Structure the document with proper headings and sections
+6. Use semantic HTML that will render beautifully in a Word-like editor
+7. Include proper spacing and formatting
+8. If the user asks for tables, use proper HTML <table> tags
+9. For math equations, ALWAYS use LaTeX format:
+   - Inline math: Use single dollar signs like $E=mc^2$ or $x = \\frac{-b \\pm \\sqrt{b^2 - 4ac}}{2a}$
+   - Block math: Use double dollar signs like $$\\int_0^1 x^2 dx$$ or $$x = \\frac{5 \\pm 1}{4}$$
+   - Examples: $2x^2 - 5x + 3 = 0$, $\\sqrt{x + 4} = 3$, $$x_1 = \\frac{3}{2}$$, $$x_2 = 1$$
+   - Always escape backslashes in LaTeX: use \\\\ for single backslash
+   - The LaTeX will be automatically converted to proper math rendering nodes
+
+Generate a complete, professional document based on the user's request.`;
+
+      messages.push({
+        role: 'system',
+        content: wordSystemMessage
+      });
+
+      // Add file context if available
+      if (processedFiles.length > 0) {
+        for (const file of processedFiles) {
+          if (file.extractedText) {
+            messages.push({
+              role: 'user',
+              content: `Context from file "${file.name}":\n${file.extractedText.substring(0, 5000)}`
+            });
+          }
+        }
+      }
+
+      // Add user prompt
+      messages.push({
+        role: 'user',
+        content: prompt
+      });
+
+      // Initialize OpenAI client based on provider
+      let openai;
+      if (provider === "Gemini") {
+        openai = new OpenAI({
+          apiKey: process.env.GEMINI_API_KEY,
+          baseURL: "https://generativelanguage.googleapis.com/v1beta/openai/",
+        });
+      } else if (provider === "OpenRouter") {
+        openai = new OpenAI({
+          apiKey: process.env.OPENROUTER_API_KEY,
+          baseURL: "https://openrouter.ai/api/v1",
+        });
+      } else {
+        openai = new OpenAI({
+          apiKey: process.env.OPENAI_API_KEY
+        });
+      }
+
+      let fullResponseContent = '';
+
+      // Generate stream
+      const stream = await openai.chat.completions.create({
+        model: model,
+        messages: messages,
+        stream: true,
+      }, { signal });
+
+      // Stream response
+      for await (const chunk of stream) {
+        const contentChunk = chunk.choices[0]?.delta?.content || '';
+        if (contentChunk) {
+          fullResponseContent += contentChunk;
+          res.write(`data: ${JSON.stringify({ content: contentChunk })}\n\n`);
+        }
+      }
+
+      // Save chat and track usage
+      if (chatId && fullResponseContent.trim()) {
+        const tokens = fullResponseContent.length + prompt.length;
+        // Don't save the full content to the message, just a confirmation.
+        await saveChatAndTrackUsage(userId, chatId, prompt, "The document has been generated in the Word Connector.", tokens, model, processedFiles);
+
+        // Update chat with Word content
+        await prisma.chat.update({
+          where: { id: chatId },
+          data: { wordContent: fullResponseContent, isWordConnectorChat: true }
+        });
+      }
+
+      res.write(`data: ${JSON.stringify({ done: true })}\n\n`);
+      res.end();
+
+    } catch (error) {
+      console.error('❌ Word Document generation error:', error);
+
+      if (!res.headersSent) {
+        res.status(500).json({ error: error.message || 'Word Document generation failed' });
+      } else {
+        try {
+          res.write(`data: ${JSON.stringify({ error: error.message || 'Word Document generation failed' })}\n\n`);
+        } catch (writeError) {
+          console.error('Failed to write error to stream:', writeError);
+        }
+      }
+    } finally {
+      if (streamId) {
+        streamControllers.delete(streamId);
+        console.log(`Word Document Stream unregistered for ID: ${streamId}`);
+      }
+
+      if (!res.writableEnded) {
+        res.end();
+      }
     }
   }
 );
