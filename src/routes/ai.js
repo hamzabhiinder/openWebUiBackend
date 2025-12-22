@@ -3379,9 +3379,10 @@ router.post(
   }
 );
 
-// ✅ Generate Word Document Content - Specialized endpoint for Word Connector
+
+// ✅ Generate Excel Workbook Content - Specialized endpoint for Excel Connector
 router.post(
-  '/generate-word',
+  '/generate-excel',
   [
     body('model').trim().notEmpty().withMessage('Model is required'),
     body('prompt').trim().notEmpty().withMessage('Prompt is required'),
@@ -3398,15 +3399,15 @@ router.post(
 
     if (streamId) {
       streamControllers.set(streamId, controller);
-      console.log(`Word Document Stream registered with ID: ${streamId}`);
+      console.log(`Excel Workbook Stream registered with ID: ${streamId}`);
     }
 
     req.on('close', () => {
-      console.log(`Client connection closed for Word document chat: ${req.body.chatId}. Aborting generation.`);
+      console.log(`Client connection closed for Excel workbook chat: ${req.body.chatId}. Aborting generation.`);
       controller.abort();
     });
     req.on('aborted', () => {
-      console.log(`Client request aborted for Word document chat: ${req.body.chatId}. Aborting generation.`);
+      console.log(`Client request aborted for Excel workbook chat: ${req.body.chatId}. Aborting generation.`);
       controller.abort();
     });
 
@@ -3420,7 +3421,7 @@ router.post(
       const { prompt, chatId, provider = 'OpenAI', model = 'gpt-4o', files } = req.body;
       const userId = req.user.id;
 
-      console.log('📄 Word Document generation request:', { prompt, chatId, provider, model, hasFiles: !!files?.length });
+      console.log('📊 Excel Workbook generation request:', { prompt, chatId, provider, model, hasFiles: !!files?.length });
 
       // Check monthly limit
       if (req.user.plan === 'FREE') {
@@ -3482,36 +3483,83 @@ router.post(
       res.setHeader('Cache-Control', 'no-cache');
       res.setHeader('Connection', 'keep-alive');
 
-      // Build messages for Word document generation
       const messages = [];
 
-      // System message specifically for Word document generation
-      const wordSystemMessage = `You are an expert document writer specializing in creating professional Word documents. Your task is to generate well-structured, formatted content that will be displayed in a rich text editor.
+      const excelSystemMessage = `You are an expert spreadsheet designer. Generate a spreadsheet as a JSON workbook that can be loaded into Syncfusion Spreadsheet (openFromJson).
 
 CRITICAL REQUIREMENTS:
-1. Return content in clean HTML format suitable for a rich text editor (Tiptap)
-2. Use proper HTML tags: <h1>, <h2>, <h3> for headings, <p> for paragraphs, <ul>/<ol> for lists, <strong> for bold, <em> for italic
-3. Do NOT include markdown syntax (no #, *, -, etc.)
-4. Do NOT include code blocks or backticks
-5. Structure the document with proper headings and sections
-6. Use semantic HTML that will render beautifully in a Word-like editor
-7. Include proper spacing and formatting
-8. If the user asks for tables, use proper HTML <table> tags
-9. For math equations, ALWAYS use LaTeX format:
-   - Inline math: Use single dollar signs like $E=mc^2$ or $x = \\frac{-b \\pm \\sqrt{b^2 - 4ac}}{2a}$
-   - Block math: Use double dollar signs like $$\\int_0^1 x^2 dx$$ or $$x = \\frac{5 \\pm 1}{4}$$
-   - Examples: $2x^2 - 5x + 3 = 0$, $\\sqrt{x + 4} = 3$, $$x_1 = \\frac{3}{2}$$, $$x_2 = 1$$
-   - Always escape backslashes in LaTeX: use \\\\ for single backslash
-   - The LaTeX will be automatically converted to proper math rendering nodes
+1. Return ONLY valid JSON. No markdown, no backticks, no commentary.
+2. The JSON must be a workbook model with this shape:
+   {"sheets":[{"name":"Sheet1","rows":[{"cells":[{"value":"Header 1"},{"value":"Header 2"}]}]}]}
+3. Use rows[].cells[].value for values (string/number/boolean). If a cell is intentionally blank, set {"value":""}.
+4. For formulas, use rows[].cells[].formula with Excel-style formulas like "=SUM(A2:A10)".
+5. Keep the table rectangular (each row should have the same number of cells). If needed, pad with empty cells.
+6. Default to 1 sheet unless the user explicitly requests multiple sheets.
+7. Unless the user requests a very large dataset, keep output within 200 rows and 30 columns.
 
-Generate a complete, professional document based on the user's request.`;
+**ADVANCED EXCEL ERP & FORMULA GENERATION RULES:**
 
-      messages.push({
-        role: 'system',
-        content: wordSystemMessage
-      });
+If the user asks for a complex Excel system (like ERP, Inventory Management, Finance Dashboard) with multiple sheets and connections:
 
-      // Add file context if available
+1. **TRANSLATE FORMULAS:** Even if the user asks in Spanish (e.g., BUSCARX, SUMAR.SI), you MUST write the formula in **ENGLISH** (VLOOKUP, SUMIFS) because the Excel file engine requires English formulas. They will appear in the user's local language when they open the file.
+2. **🚨 CRITICAL: ALWAYS USE VLOOKUP - NEVER XLOOKUP:** 
+   - **FORBIDDEN:** Never use XLOOKUP - it's not supported in many Excel versions
+   - **MANDATORY:** Always use VLOOKUP for cross-sheet lookups
+   - **VLOOKUP Syntax:** VLOOKUP(lookup_value, table_array, col_index_num, [range_lookup])
+   - **🚨 CRITICAL RANGE REQUIREMENT:** Syncfusion Spreadsheet does NOT support full column references like $A:$E
+   - **MANDATORY:** Always use BOUNDED ranges with explicit rows (e.g., $A$1:$E$500, NOT $A:$E)
+   - **Correct Example:** VLOOKUP(B2, Productos!$A$1:$E$500, 5, FALSE)
+   - **WRONG Example:** VLOOKUP(B2, Productos!$A:$E, 5, FALSE) ❌ - This will NOT work in Syncfusion so use this VLOOKUP(B2, Productos!$A$1:$E$500, 5, FALSE)
+   - **For cross-sheet references:** Use 'SheetName'!$A$1:$E$500 format (bounded ranges with row numbers)
+   - Range_lookup should be FALSE for exact matches (most common case)
+   - **Always use absolute references ($A$1:$E$500) for lookup tables to ensure formulas work correctly.
+
+ 
+// ------------------- CHART ACTION RULES -------------------
+
+**CRITICAL: ONLY create charts when user EXPLICITLY requests visualization/charts/graphs.**
+
+DO NOT create charts by default. Only create charts if user says:
+- "with a chart"
+- "show as chart"
+- "visualize"
+- "create a graph"
+- "bar chart"
+- "pie chart"
+- "line chart"
+- etc.
+
+If user ONLY asks for data/spreadsheet WITHOUT mentioning charts/visualization, return:
+{
+  "sheets": [ ... ]
+}
+
+If user EXPLICITLY requests charts, then return:
+{
+  "workbook": {
+    "sheets": [ ... ]
+  },
+  "actions": [
+    {
+      "type": "insertChart",
+      "sheet": "Sheet1",
+      "chartType": "Column | Line | Pie | Bar",
+      "range": "A1:B10",
+      "title": "Chart Title"
+    }
+  ]
+}
+
+**CHART POSITIONING RULES:**
+- Charts will auto-position below the data
+- You do NOT need to specify position coordinates
+- Just provide: type, sheet, chartType, range, and title
+
+Generate the workbook based on the user's request.`;
+
+
+      messages.push({ role: 'system', content: excelSystemMessage });
+
       if (processedFiles.length > 0) {
         for (const file of processedFiles) {
           if (file.extractedText) {
@@ -3523,11 +3571,7 @@ Generate a complete, professional document based on the user's request.`;
         }
       }
 
-      // Add user prompt
-      messages.push({
-        role: 'user',
-        content: prompt
-      });
+      messages.push({ role: 'user', content: prompt });
 
       // Initialize OpenAI client based on provider
       let openai;
@@ -3549,14 +3593,12 @@ Generate a complete, professional document based on the user's request.`;
 
       let fullResponseContent = '';
 
-      // Generate stream
       const stream = await openai.chat.completions.create({
         model: model,
         messages: messages,
         stream: true,
       }, { signal });
 
-      // Stream response
       for await (const chunk of stream) {
         const contentChunk = chunk.choices[0]?.delta?.content || '';
         if (contentChunk) {
@@ -3568,27 +3610,31 @@ Generate a complete, professional document based on the user's request.`;
       // Save chat and track usage
       if (chatId && fullResponseContent.trim()) {
         const tokens = fullResponseContent.length + prompt.length;
-        // Don't save the full content to the message, just a confirmation.
-        await saveChatAndTrackUsage(userId, chatId, prompt, "The document has been generated in the Word Connector.", tokens, model, processedFiles);
+        await saveChatAndTrackUsage(userId, chatId, prompt, "The spreadsheet has been generated in the Excel Connector.", tokens, model, processedFiles);
 
-        // Update chat with Word content
+        let parsedExcelContent = null;
+        try {
+          parsedExcelContent = JSON.parse(fullResponseContent.trim());
+        } catch (e) {
+          parsedExcelContent = fullResponseContent.trim();
+        }
+
         await prisma.chat.update({
           where: { id: chatId },
-          data: { wordContent: fullResponseContent, isWordConnectorChat: true }
+          data: { excelContent: parsedExcelContent, isExcelConnectorChat: true }
         });
       }
 
       res.write(`data: ${JSON.stringify({ done: true })}\n\n`);
       res.end();
-
     } catch (error) {
-      console.error('❌ Word Document generation error:', error);
+      console.error('❌ Excel Workbook generation error:', error);
 
       if (!res.headersSent) {
-        res.status(500).json({ error: error.message || 'Word Document generation failed' });
+        res.status(500).json({ error: error.message || 'Excel Workbook generation failed' });
       } else {
         try {
-          res.write(`data: ${JSON.stringify({ error: error.message || 'Word Document generation failed' })}\n\n`);
+          res.write(`data: ${JSON.stringify({ error: error.message || 'Excel Workbook generation failed' })}\n\n`);
         } catch (writeError) {
           console.error('Failed to write error to stream:', writeError);
         }
@@ -3596,7 +3642,7 @@ Generate a complete, professional document based on the user's request.`;
     } finally {
       if (streamId) {
         streamControllers.delete(streamId);
-        console.log(`Word Document Stream unregistered for ID: ${streamId}`);
+        console.log(`Excel Workbook Stream unregistered for ID: ${streamId}`);
       }
 
       if (!res.writableEnded) {
