@@ -3614,8 +3614,26 @@ Generate the workbook based on the user's request.`;
 
         let parsedExcelContent = null;
         try {
-          parsedExcelContent = JSON.parse(fullResponseContent.trim());
+          // Clean up the response before parsing
+          let cleaned = fullResponseContent.trim();
+          
+          // Remove markdown code blocks if present
+          cleaned = cleaned.replace(/^```json\s*/i, '').replace(/^```\s*/i, '').replace(/```\s*$/i, '');
+          cleaned = cleaned.trim();
+          
+          // Extract JSON if there's extra text
+          const jsonStart = cleaned.indexOf('{');
+          const jsonEnd = cleaned.lastIndexOf('}');
+          if (jsonStart !== -1 && jsonEnd !== -1 && jsonEnd >= jsonStart) {
+            cleaned = cleaned.substring(jsonStart, jsonEnd + 1);
+          }
+          
+          parsedExcelContent = JSON.parse(cleaned);
+          console.log('✅ Excel content parsed successfully for chat:', chatId);
         } catch (e) {
+          console.error('❌ Failed to parse Excel content as JSON:', e.message);
+          console.error('Content preview:', fullResponseContent.substring(0, 200));
+          // Store as string if parsing fails
           parsedExcelContent = fullResponseContent.trim();
         }
 
@@ -3623,6 +3641,8 @@ Generate the workbook based on the user's request.`;
           where: { id: chatId },
           data: { excelContent: parsedExcelContent, isExcelConnectorChat: true }
         });
+        
+        console.log('✅ Excel content saved to chat:', chatId);
       }
 
       res.write(`data: ${JSON.stringify({ done: true })}\n\n`);
