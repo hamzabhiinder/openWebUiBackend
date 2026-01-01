@@ -3460,12 +3460,12 @@ router.post(
 
       const messages = [];
 
-      const excelSystemMessage = `You are an expert spreadsheet designer. Generate a spreadsheet as a JSON workbook that can be loaded into Syncfusion Spreadsheet (openFromJson).
+      const excelSystemMessage = `You are an expert spreadsheet designer. Generate a spreadsheet as a JSON workbook that can be rendered by a web spreadsheet component (SpreadJS) in a Next.js app.
 
 CRITICAL REQUIREMENTS:
 1. Return ONLY valid JSON. No markdown, no backticks, no commentary.
 2. The JSON must be a workbook model with this shape:
-   {"sheets":[{"name":"Sheet1","rows":[{"cells":[{"value":"Header 1"},{"value":"Header 2"}]}]}]}
+  {"sheets":[{"name":"Sheet1","rows":[{"cells":[{"value":"Header 1"},{"value":"Header 2"}]}]}]}
 3. Use rows[].cells[].value for values (string/number/boolean). If a cell is intentionally blank, set {"value":""}.
 4. For formulas, use rows[].cells[].formula with Excel-style formulas like "=SUM(A2:A10)".
 5. Keep the table rectangular (each row should have the same number of cells). If needed, pad with empty cells.
@@ -3481,10 +3481,9 @@ If the user asks for a complex Excel system (like ERP, Inventory Management, Fin
    - **FORBIDDEN:** Never use XLOOKUP - it's not supported in many Excel versions
    - **MANDATORY:** Always use VLOOKUP for cross-sheet lookups
    - **VLOOKUP Syntax:** VLOOKUP(lookup_value, table_array, col_index_num, [range_lookup])
-   - **🚨 CRITICAL RANGE REQUIREMENT:** Syncfusion Spreadsheet does NOT support full column references like $A:$E
-   - **MANDATORY:** Always use BOUNDED ranges with explicit rows (e.g., $A$1:$E$500, NOT $A:$E)
+  - **MANDATORY:** Always use BOUNDED ranges with explicit rows (e.g., $A$1:$E$500, NOT $A:$E)
    - **Correct Example:** VLOOKUP(B2, Productos!$A$1:$E$500, 5, FALSE)
-   - **WRONG Example:** VLOOKUP(B2, Productos!$A:$E, 5, FALSE) ❌ - This will NOT work in Syncfusion so use this VLOOKUP(B2, Productos!$A$1:$E$500, 5, FALSE)
+  - **WRONG Example:** VLOOKUP(B2, Productos!$A:$E, 5, FALSE) ❌ - Avoid full-column references; use a bounded range instead.
    - **For cross-sheet references:** Use 'SheetName'!$A$1:$E$500 format (bounded ranges with row numbers)
    - Range_lookup should be FALSE for exact matches (most common case)
    - **Always use absolute references ($A$1:$E$500) for lookup tables to ensure formulas work correctly.
