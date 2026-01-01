@@ -61,13 +61,15 @@ router.post('/', [
       return res.status(400).json({ errors: errors.array() });
     }
 
-    const { title, model } = req.body;
+    const { title, model, isWordConnectorChat, isExcelConnectorChat } = req.body;
 
     const chat = await prisma.chat.create({
       data: {
         userId: req.user.id,
         title,
-        model
+        model,
+        isWordConnectorChat: isWordConnectorChat || false,
+        isExcelConnectorChat: isExcelConnectorChat || false
       },
       include: {
         messages: true
@@ -787,6 +789,41 @@ router.post('/save-shared', authenticateToken, async (req, res) => {
   } catch (error) {
     console.error('Save shared content error:', error);
     res.status(500).json({ error: 'Failed to save shared content' });
+  }
+});
+
+router.put('/:id/word-content', [
+  body('content').isString().withMessage('Content must be a string'),
+], authenticateToken, async (req, res) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ errors: errors.array() });
+    }
+
+    const { content } = req.body;
+    const { id } = req.params;
+
+    const chat = await prisma.chat.findFirst({
+      where: {
+        id: id,
+        userId: req.user.id
+      }
+    });
+
+    if (!chat) {
+      return res.status(404).json({ error: 'Chat not found' });
+    }
+
+    const updatedChat = await prisma.chat.update({
+      where: { id: id },
+      data: { wordContent: content }
+    });
+
+    res.json({ message: 'Word content updated successfully', chat: updatedChat });
+  } catch (error) {
+    console.error('Update word content error:', error);
+    res.status(500).json({ error: 'Failed to update word content' });
   }
 });
 

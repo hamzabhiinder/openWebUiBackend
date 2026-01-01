@@ -6,190 +6,7 @@ const { Document, Packer, Paragraph, HeadingLevel } = require('docx');
 const puppeteer = require('puppeteer');
 const PizZip = require('pizzip');
 const axios = require('axios');
-const XLSX = require('xlsx');
 
-// Extract table data from markdown content
-function extractTableData(content) {
-    const lines = content.split('\n').filter(line => line.trim());
-    
-    // First priority: Look for markdown tables
-    const tableMatches = content.match(/\|(.+)\|\s*\n\|[-\s|:]+\|\s*\n((?:\|.+\|\s*\n?)+)/g);
-    if (tableMatches && tableMatches.length > 0) {
-        const tableMatch = tableMatches[0].match(/\|(.+)\|\s*\n\|[-\s|:]+\|\s*\n((?:\|.+\|\s*\n?)+)/);
-        if (tableMatch) {
-            const headers = tableMatch[1].split('|').map(h => h.trim()).filter(h => h);
-            const rows = tableMatch[2].split('\n')
-                .filter(row => row.trim() && row.includes('|'))
-                .map(row => row.split('|').map(cell => cell.trim()).filter(cell => cell));
-            
-            return { headers, rows };
-        }
-    }
-    
-    // Second priority: Look for derivative examples pattern
-    const examples = [];
-    let currentRule = '';
-    
-    for (let i = 0; i < lines.length; i++) {
-        const line = lines[i].trim();
-        
-        // Skip empty lines and intro text
-        if (!line || line.includes('Here are') || line.includes('Let me know')) {
-            continue;
-        }
-        
-        // Check for numbered rules (1. **Rule Name**)
-        const ruleMatch = line.match(/^\d+\.\s*\*\*([^*]+)\*\*/);
-        if (ruleMatch) {
-            currentRule = ruleMatch[1].trim();
-            continue;
-        }
-        
-        // Check for formula lines
-        if (line.includes('Formula:') && currentRule) {
-            const formulaText = line.replace('Formula:', '').trim();
-            examples.push({ rule: currentRule, formula: formulaText });
-            currentRule = '';
-        }
-    }
-    
-    if (examples.length >= 2) {
-        return {
-            headers: ['Rule', 'Formula'],
-            rows: examples.map(ex => [ex.rule, ex.formula])
-        };
-    }
-    
-    // Third priority: Look for key-value pairs or structured data
-    const structuredData = [];
-    const keyValuePattern = /^([^:]+):\s*(.+)$/;
-    
-    for (const line of lines) {
-        const match = line.match(keyValuePattern);
-        if (match && match[1].length < 50) { // Reasonable key length
-            structuredData.push([match[1].trim(), match[2].trim()]);
-        }
-    }
-    
-    if (structuredData.length >= 3) {
-        return {
-            headers: ['Property', 'Value'],
-            rows: structuredData
-        };
-    }
-    
-    // Fourth priority: If no structured data, create a summary from the content
-    const words = content.split(/\s+/).filter(word => word.length > 3);
-    const wordFreq = {};
-    words.forEach(word => {
-        const clean = word.toLowerCase().replace(/[^a-zA-Z0-9]/g, '');
-        if (clean.length > 3) {
-            wordFreq[clean] = (wordFreq[clean] || 0) + 1;
-        }
-    });
-    
-    const topWords = Object.entries(wordFreq)
-        .sort((a, b) => b[1] - a[1])
-        .slice(0, 10)
-        .map(([word, count]) => [word, count.toString()]);
-    
-    if (topWords.length > 0) {
-        return {
-            headers: ['Term', 'Frequency'],
-            rows: topWords
-        };
-    }
-    
-    return null;
-}
-
-async function createCsv(filePath, content) {
-    const tableData = extractTableData(content);
-    
-    if (!tableData) {
-        // If no table data, create a simple CSV with content summary
-        const lines = content.split('\n').filter(line => line.trim());
-        const csvContent = ['Section,Content'];
-        
-        lines.forEach((line, index) => {
-            if (line.trim()) {
-                const cleanLine = line.replace(/"/g, '""');
-                csvContent.push(`"Line ${index + 1}","${cleanLine}"`);
-            }
-        });
-        
-        await fs.writeFile(filePath, csvContent.join('\n'));
-        return;
-    }
-    
-    // Create CSV with table data
-    const csvRows = [
-        tableData.headers.map(h => `"${h.replace(/"/g, '""')}"`).join(','),
-        ...tableData.rows.map(row => 
-            row.map(cell => `"${cell.replace(/"/g, '""')}"`).join(',')
-        )
-    ];
-    
-    await fs.writeFile(filePath, csvRows.join('\n'));
-}
-
-async function createXlsx(filePath, content) {
-    const tableData = extractTableData(content);
-    
-    if (!tableData) {
-        // If no table data, create a simple Excel with content breakdown
-        const lines = content.split('\n').filter(line => line.trim());
-        const worksheetData = [
-            ['Section', 'Content'],
-            ...lines.map((line, index) => [`Line ${index + 1}`, line.trim()])
-        ];
-        
-        const wb = XLSX.utils.book_new();
-        const ws = XLSX.utils.aoa_to_sheet(worksheetData);
-        
-        // Auto-size columns
-        const colWidths = [
-            { wch: 15 }, // Section column
-            { wch: 80 }  // Content column
-        ];
-        ws['!cols'] = colWidths;
-        
-        XLSX.utils.book_append_sheet(wb, ws, 'Content');
-        await XLSX.writeFile(wb, filePath);
-        return;
-    }
-    
-    // Create Excel with table data
-    const worksheetData = [tableData.headers, ...tableData.rows];
-    const wb = XLSX.utils.book_new();
-    const ws = XLSX.utils.aoa_to_sheet(worksheetData);
-    
-    // Auto-size columns based on content
-    const colWidths = tableData.headers.map((header, colIndex) => {
-        const maxLength = Math.max(
-            header.length,
-            ...tableData.rows.map(row => (row[colIndex] || '').length)
-        );
-        return { wch: Math.min(maxLength + 2, 50) };
-    });
-    ws['!cols'] = colWidths;
-    
-    // Style headers
-    const headerRange = XLSX.utils.decode_range(ws['!ref']);
-    for (let col = headerRange.s.c; col <= headerRange.e.c; col++) {
-        const cellAddress = XLSX.utils.encode_cell({ r: 0, c: col });
-        if (ws[cellAddress]) {
-            ws[cellAddress].s = {
-                font: { bold: true },
-                fill: { fgColor: { rgb: '4472C4' } },
-                alignment: { horizontal: 'center' }
-            };
-        }
-    }
-    
-    XLSX.utils.book_append_sheet(wb, ws, 'Data');
-    await XLSX.writeFile(wb, filePath);
-}
 
 async function createDocx(filePath, content) {
     // --- Step 1: Extract and save base64 images ---
@@ -335,7 +152,7 @@ async function createDocx(filePath, content) {
     const tempMarkdownPath = filePath + '.md';
     await fs.writeFile(tempMarkdownPath, cleanedContent);
 
-    // --- Step 4: Create reference doc for Times New Roman font and default size 12pt ---
+    // --- Step 4: Create reference doc for Calibri font and nice base styles ---
     const referenceDoc = new Document({
         sections: [{
             children: [new Paragraph({ text: "Reference Document", heading: HeadingLevel.HEADING_1 })]
@@ -343,7 +160,7 @@ async function createDocx(filePath, content) {
         styles: {
             default: {
                 document: {
-                    run: { font: "Times New Roman", size: 24 }, // 24 half-points = 12pt (standard size)
+                    run: { font: "Calibri", size: 22 },
                     paragraph: { spacing: { line: 276, before: 10, after: 10 } }
                 }
             }
@@ -533,16 +350,10 @@ async function createDocument(userId, filename, content) {
 
     const extension = path.extname(safeFilename).toLowerCase();
 
-    console.log(`Creating document with extension: ${extension}`);
-
     if (extension === '.docx') {
         await createDocx(filePath, content);
     } else if (extension === '.pdf') {
         await createPdf(filePath, content);
-    } else if (extension === '.csv') {
-        await createCsv(filePath, content);
-    } else if (extension === '.xlsx') {
-        await createXlsx(filePath, content);
     } else {
         await fs.writeFile(filePath, content);
     }
@@ -552,5 +363,4 @@ async function createDocument(userId, filename, content) {
 
 module.exports = {
     createDocument,
-    extractTableData,
 };

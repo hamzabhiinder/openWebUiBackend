@@ -349,12 +349,12 @@ router.post(
         customSystemPrompt += `
 
 **CRITICAL DOCUMENT CREATION RULES:**
-⚠️ ONLY create downloadable documents when the user EXPLICITLY requests a file format (Word, PDF, DOCX, Excel, CSV, XLSX, etc.)
+⚠️ ONLY create downloadable documents when the user EXPLICITLY requests a file format (Word, PDF, DOCX, etc.)
 
 **When to CREATE A DOCUMENT FILE:**
-- User explicitly says: "make a Word document", "create a PDF", "download as DOCX", "create an Excel file", "generate CSV", "make XLSX"
-- User says: "convert to Word/PDF/Excel/CSV", "export as document/spreadsheet", "save as file"
-- User references file formats: ".docx", ".pdf", ".xlsx", ".csv", "Word file", "PDF file", "Excel file", "CSV file"
+- User explicitly says: "make a Word document", "create a PDF", "download as DOCX"
+- User says: "convert to Word/PDF", "export as document", "save as file"
+- User references file formats: ".docx", ".pdf", "Word file", "PDF file"
 
 **When to DISPLAY IN CHAT (DO NOT create document):**
 - User says: "show me", "create a table", "generate a list", "make a chart"
@@ -366,7 +366,7 @@ router.post(
 2. If user provides content in their current message, use that exact content
 3. Use markdown for structure (# for Heading 1, ## for Heading 2)
 4. Wrap the ENTIRE document content in: [CREATE_DOCUMENT:filename.ext]...content...[/CREATE_DOCUMENT]
-5. Replace 'filename.ext' with appropriate filename (e.g., 'report.docx', 'summary.pdf', 'data.xlsx', 'export.csv')
+5. Replace 'filename.ext' with appropriate filename (e.g., 'report.docx', 'summary.pdf')
 6. Give brief acknowledgment: "I'll create a Document with the content"
 
 **EXAMPLES:**
@@ -374,9 +374,6 @@ router.post(
 - "Create a Word document with sales projections" → Generate Word file
 - "Make a PDF from the data above" → Generate PDF file
 - "Download this as a DOCX file" → Generate Word file
-- "Export to Excel spreadsheet" → Generate Excel file
-- "Create CSV file with the data" → Generate CSV file
-- "Make XLSX with financial data" → Generate Excel file
 
 ❌ DISPLAY IN CHAT:
 - "Create a sales projection table" → Display markdown table in chat
@@ -420,12 +417,12 @@ The derivative is: $f'(x) = -40x^{7} + 42x^{5} + 27x^{2} + 14$
 
 
 **CRITICAL DOCUMENT CREATION RULES:**
-⚠️ ONLY create downloadable documents when the user EXPLICITLY requests a file format (Word, PDF, DOCX, Excel, CSV, XLSX, etc.)
+⚠️ ONLY create downloadable documents when the user EXPLICITLY requests a file format (Word, PDF, DOCX, etc.)
 
 **When to CREATE A DOCUMENT FILE:**
-- User explicitly says: "make a Word document", "create a PDF", "download as DOCX", "create an Excel file", "generate CSV", "make XLSX"
-- User says: "convert to Word/PDF/Excel/CSV", "export as document/spreadsheet", "save as file"
-- User references file formats: ".docx", ".pdf", ".xlsx", ".csv", "Word file", "PDF file", "Excel file", "CSV file"
+- User explicitly says: "make a Word document", "create a PDF", "download as DOCX"
+- User says: "convert to Word/PDF", "export as document", "save as file"
+- User references file formats: ".docx", ".pdf", "Word file", "PDF file"
 
 **When to DISPLAY IN CHAT (DO NOT create document):**
 - User says: "show me", "create a table", "generate a list", "make a chart"
@@ -437,7 +434,7 @@ The derivative is: $f'(x) = -40x^{7} + 42x^{5} + 27x^{2} + 14$
 2. If user provides content in their current message, use that exact content
 3. Use markdown for structure (# for Heading 1, ## for Heading 2)
 4. Wrap the ENTIRE document content in: [CREATE_DOCUMENT:filename.ext]...content...[/CREATE_DOCUMENT]
-5. Replace 'filename.ext' with appropriate filename (e.g., 'report.docx', 'summary.pdf', 'data.xlsx', 'export.csv')
+5. Replace 'filename.ext' with appropriate filename (e.g., 'report.docx', 'summary.pdf')
 6. Give brief acknowledgment: "I'll create a Document with the content"
 
 **EXAMPLES:**
@@ -445,9 +442,6 @@ The derivative is: $f'(x) = -40x^{7} + 42x^{5} + 27x^{2} + 14$
 - "Create a Word document with sales projections" → Generate Word file
 - "Make a PDF from the data above" → Generate PDF file
 - "Download this as a DOCX file" → Generate Word file
-- "Export to Excel spreadsheet" → Generate Excel file
-- "Create CSV file with the data" → Generate CSV file
-- "Make XLSX with financial data" → Generate Excel file
 
 ❌ DISPLAY IN CHAT:
 - "Create a sales projection table" → Display markdown table in chat
@@ -3381,6 +3375,250 @@ router.post(
     } catch (error) {
       console.error('Chart generation error:', error);
       res.status(500).json({ error: error.message || 'Chart generation failed' });
+    }
+  }
+);
+
+
+// ✅ Generate Excel Workbook Content - Specialized endpoint for Excel Connector
+router.post(
+  '/generate-excel',
+  [
+    body('model').trim().notEmpty().withMessage('Model is required'),
+    body('prompt').trim().notEmpty().withMessage('Prompt is required'),
+    body('provider').trim().notEmpty().withMessage('Provider is required'),
+    body('chatId').optional().isString(),
+    body('files').optional().isArray(),
+  ],
+  authenticateToken,
+  async (req, res) => {
+    try {
+      const errors = validationResult(req);
+      if (!errors.isEmpty()) {
+        return res.status(400).json({ errors: errors.array() });
+      }
+
+      const { prompt, chatId, provider = 'OpenAI', model = 'gpt-4o', files } = req.body;
+      const userId = req.user.id;
+
+      console.log('📊 Excel Workbook generation request:', { prompt, chatId, provider, model, hasFiles: !!files?.length });
+
+      // Check monthly limit
+      if (req.user.plan === 'FREE') {
+        const result = await prisma.user.updateMany({
+          where: {
+            id: userId,
+            monthlyCallLimit: { gt: 0 }
+          },
+          data: {
+            monthlyCallLimit: { decrement: 1 }
+          }
+        });
+
+        if (!result || result.count === 0) {
+          return res.status(429).json({
+            error: 'Free monthly queries exhausted. Please upgrade to continue.',
+            remaining: 0
+          });
+        }
+      } else {
+        if (req.user.apiUsage >= req.user.monthlyLimit) {
+          return res.status(429).json({
+            error: 'Monthly API limit exceeded',
+            usage: { current: req.user.apiUsage, limit: req.user.monthlyLimit },
+          });
+        }
+      }
+
+      // Verify chat exists and belongs to user
+      let chat = null;
+      if (chatId) {
+        chat = await prisma.chat.findUnique({ where: { id: chatId } });
+        if (chat && chat.userId !== userId) {
+          return res.status(404).json({ error: 'Chat not found or access denied.' });
+        }
+      }
+
+      // Process attached files
+      let processedFiles = [];
+      if (files && files.length > 0) {
+        processedFiles = await Promise.all(
+          files.map(async (fileId) => {
+            const file = await prisma.file.findFirst({
+              where: { id: fileId, userId }
+            });
+            return file ? {
+              id: file.id,
+              name: file.originalName,
+              extractedText: file.extractedText,
+              mimeType: file.mimeType,
+              path: file.path
+            } : null;
+          })
+        ).then(results => results.filter(Boolean));
+      }
+
+      const messages = [];
+
+      const excelSystemMessage = `You are an expert spreadsheet designer. Generate a spreadsheet as a JSON workbook that can be rendered by a web spreadsheet component (SpreadJS) in a Next.js app.
+
+CRITICAL REQUIREMENTS:
+1. Return ONLY valid JSON. No markdown, no backticks, no commentary.
+2. The JSON must be a workbook model with this shape:
+  {"sheets":[{"name":"Sheet1","rows":[{"cells":[{"value":"Header 1"},{"value":"Header 2"}]}]}]}
+3. Use rows[].cells[].value for values (string/number/boolean). If a cell is intentionally blank, set {"value":""}.
+4. For formulas, use rows[].cells[].formula with Excel-style formulas like "=SUM(A2:A10)".
+5. Keep the table rectangular (each row should have the same number of cells). If needed, pad with empty cells.
+6. Default to 1 sheet unless the user explicitly requests multiple sheets.
+7. Unless the user requests a very large dataset, keep output within 200 rows and 30 columns.
+
+**ADVANCED EXCEL ERP & FORMULA GENERATION RULES:**
+
+If the user asks for a complex Excel system (like ERP, Inventory Management, Finance Dashboard) with multiple sheets and connections:
+
+1. **TRANSLATE FORMULAS:** Even if the user asks in Spanish (e.g., BUSCARX, SUMAR.SI), you MUST write the formula in **ENGLISH** (VLOOKUP, SUMIFS) because the Excel file engine requires English formulas. They will appear in the user's local language when they open the file.
+2. **🚨 CRITICAL: ALWAYS USE VLOOKUP - NEVER XLOOKUP:** 
+   - **FORBIDDEN:** Never use XLOOKUP - it's not supported in many Excel versions
+   - **MANDATORY:** Always use VLOOKUP for cross-sheet lookups
+   - **VLOOKUP Syntax:** VLOOKUP(lookup_value, table_array, col_index_num, [range_lookup])
+  - **MANDATORY:** Always use BOUNDED ranges with explicit rows (e.g., $A$1:$E$500, NOT $A:$E)
+   - **Correct Example:** VLOOKUP(B2, Productos!$A$1:$E$500, 5, FALSE)
+  - **WRONG Example:** VLOOKUP(B2, Productos!$A:$E, 5, FALSE) ❌ - Avoid full-column references; use a bounded range instead.
+   - **For cross-sheet references:** Use 'SheetName'!$A$1:$E$500 format (bounded ranges with row numbers)
+   - Range_lookup should be FALSE for exact matches (most common case)
+   - **Always use absolute references ($A$1:$E$500) for lookup tables to ensure formulas work correctly.
+
+ 
+// ------------------- CHART ACTION RULES -------------------
+
+**CRITICAL: ONLY create charts when user EXPLICITLY requests visualization/charts/graphs.**
+
+DO NOT create charts by default. Only create charts if user says:
+- "with a chart"
+- "show as chart"
+- "visualize"
+- "create a graph"
+- "bar chart"
+- "pie chart"
+- "line chart"
+- etc.
+
+If user ONLY asks for data/spreadsheet WITHOUT mentioning charts/visualization, return:
+{
+  "sheets": [ ... ]
+}
+
+If user EXPLICITLY requests charts, then return:
+{
+  "workbook": {
+    "sheets": [ ... ]
+  },
+  "actions": [
+    {
+      "type": "insertChart",
+      "sheet": "Sheet1",
+      "chartType": "Column | Line | Pie | Bar",
+      "range": "A1:B10",
+      "title": "Chart Title"
+    }
+  ]
+}
+
+**CHART POSITIONING RULES:**
+- Charts will auto-position below the data
+- You do NOT need to specify position coordinates
+- Just provide: type, sheet, chartType, range, and title
+
+Generate the workbook based on the user's request.`;
+
+
+      messages.push({ role: 'system', content: excelSystemMessage });
+
+      if (processedFiles.length > 0) {
+        for (const file of processedFiles) {
+          if (file.extractedText) {
+            messages.push({
+              role: 'user',
+              content: `Context from file "${file.name}":\n${file.extractedText.substring(0, 5000)}`
+            });
+          }
+        }
+      }
+
+      messages.push({ role: 'user', content: prompt });
+
+      // Initialize OpenAI client based on provider
+      let openai;
+      if (provider === "Gemini") {
+        openai = new OpenAI({
+          apiKey: process.env.GEMINI_API_KEY,
+          baseURL: "https://generativelanguage.googleapis.com/v1beta/openai/",
+        });
+      } else if (provider === "OpenRouter") {
+        openai = new OpenAI({
+          apiKey: process.env.OPENROUTER_API_KEY,
+          baseURL: "https://openrouter.ai/api/v1",
+        });
+      } else {
+        openai = new OpenAI({
+          apiKey: process.env.OPENAI_API_KEY
+        });
+      }
+
+      // Generate response without streaming
+      const completion = await openai.chat.completions.create({
+        model: model,
+        messages: messages,
+        stream: false,
+      });
+
+      const fullResponseContent = completion.choices[0]?.message?.content || '';
+
+      if (!fullResponseContent.trim()) {
+        return res.status(500).json({ error: 'Empty response from AI model' });
+      }
+
+      // Clean response content (remove markdown code blocks if present)
+      let cleanedContent = fullResponseContent.trim()
+        .replace(/^```json\s*/i, '')
+        .replace(/^```\s*/i, '')
+        .replace(/```\s*$/i, '');
+
+      // Parse JSON response
+      let parsedExcelContent = null;
+      try {
+        parsedExcelContent = JSON.parse(cleanedContent);
+      } catch (parseError) {
+        console.error('Failed to parse Excel JSON response:', parseError);
+        console.error('Response content:', cleanedContent.substring(0, 500));
+        return res.status(500).json({
+          error: 'Invalid JSON response from AI model',
+          details: parseError.message
+        });
+      }
+
+      // Save chat and track usage
+      if (chatId) {
+        const tokens = fullResponseContent.length + prompt.length;
+        await saveChatAndTrackUsage(userId, chatId, prompt, "The spreadsheet has been generated in the Excel Connector.", tokens, model, processedFiles);
+
+        await prisma.chat.update({
+          where: { id: chatId },
+          data: { excelContent: parsedExcelContent, isExcelConnectorChat: true }
+        });
+      }
+
+      // Return the parsed JSON content
+      return res.json({
+        success: true,
+        data: parsedExcelContent
+      });
+    } catch (error) {
+      console.error('❌ Excel Workbook generation error:', error);
+
+      return res.status(500).json({
+        error: error.message || 'Excel Workbook generation failed'
+      });
     }
   }
 );

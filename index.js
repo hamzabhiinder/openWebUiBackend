@@ -14,6 +14,8 @@ const authRoutes = require('./src/routes/auth');
 const chatRoutes = require('./src/routes/chats');
 const fileRoutes = require('./src/routes/files');
 const aiRoutes = require('./src/routes/ai');
+const documentGenerateAiRoutes = require('./src/routes/generate-document');
+
 const paymentRoutes = require('./src/routes/payments');
 const adminRoutes = require('./src/routes/admin');
 const userRoutes = require('./src/routes/users');
@@ -30,7 +32,6 @@ const spotifyRoutes = require('./src/routes/spotify');
 const figmaRoutes = require('./src/routes/figma');
 const { router: computerUseRoutes, initializeWebSocketServer } = require('./src/routes/computer-use');
 const thesisRoutes = require('./src/routes/thesis');
-const onlyofficeRoutes = require('./src/routes/onlyoffice');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -136,17 +137,8 @@ app.use('/api/spotify', spotifyRoutes);
 app.use('/api/figma', figmaRoutes);
 app.use('/api/computer-use', computerUseRoutes);
 app.use('/api/thesis', thesisRoutes);
-app.use('/api/onlyoffice', onlyofficeRoutes);
+app.use('/api/document-ai', documentGenerateAiRoutes);
 
-// Simple message endpoint
-app.post('/api/simple-message', (req, res) => {
-    const { message } = req.body;
-    if (!message) {
-        return res.status(400).json({ error: 'Message is required' });
-    }
-    // You can handle/store the message here if needed
-    res.json({ status: 'success', received: message });
-});
 
 // Error handling middleware
 app.use((err, req, res, next) => {
@@ -167,8 +159,6 @@ app.use((err, req, res, next) => {
 app.use('*', (req, res) => {
     res.status(404).json({ error: 'Route not found' });
 });
-
-
 
 // Start server
 const server = app.listen(PORT, () => {
